@@ -118,29 +118,14 @@ export default function DocumentScan() {
           </div>
         )}
 
-        {/* Extraction Result */}
+        {/* Upload Success Result */}
         {extractedDoc && !extractedDoc.error && (
           <div className="animate-slide-up">
             <div className="alert alert-success mb-4">
-              ✅ Document processed successfully and securely sent to your doctor.
+              ✅ Document uploaded securely. Our AI is analyzing it in the background.
             </div>
 
-            <div className="card" style={{ padding: 'var(--space-6)', marginBottom: 'var(--space-4)' }}>
-              <h3 className="heading-3 mb-4">Document Uploaded</h3>
-              
-              <div className="flex flex-col gap-3">
-                 <div className="flex items-center gap-2">
-                    <span className="caption" style={{ width: 100 }}>Type:</span>
-                    <span className="body-text">{extractedDoc.document_type || 'Medical Document'}</span>
-                 </div>
-                 <div className="flex items-center gap-2">
-                    <span className="caption" style={{ width: 100 }}>Date:</span>
-                    <span className="body-text">{extractedDoc.document_date || 'Unknown'}</span>
-                 </div>
-              </div>
-            </div>
-
-            <div className="flex gap-3">
+            <div className="flex gap-3 mt-6">
               <button className="btn btn-success btn-full" onClick={handleDone}>{t('confirm_continue')}</button>
               <button className="btn btn-outline btn-full" onClick={handleContinue}>{t('scan_another')}</button>
             </div>

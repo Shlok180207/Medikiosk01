@@ -179,7 +179,7 @@ export default function Kiosk() {
     setProgress(30);
     // Ask first follow-up
     setTimeout(() => {
-      const q = getFirstFollowUp(languageLabel);
+      const q = data.next_question || getFirstFollowUp(languageLabel);
       addMessage(q, 'bot');
       setConversationContext(prev => prev + `\nBot: ${q}`);
     }, 800);
@@ -193,6 +193,7 @@ export default function Kiosk() {
       formData.append('patient_id', patientId);
       formData.append('conversation_context', conversationContext);
       formData.append('is_ayush', isAyush);
+      formData.append('follow_up_count', followUpCount);
       const response = await fetch(`${API_BASE_URL}/follow-up`, { method: 'POST', body: formData });
       const data = await response.json();
       handleFollowUpResponse(data);
@@ -212,6 +213,7 @@ export default function Kiosk() {
       formData.append('patient_id', patientId);
       formData.append('conversation_context', conversationContext);
       formData.append('is_ayush', isAyush);
+      formData.append('follow_up_count', followUpCount);
       const response = await fetch(`${API_BASE_URL}/follow-up-text`, { method: 'POST', body: formData });
       const data = await response.json();
       handleFollowUpResponse(data);
@@ -238,7 +240,7 @@ export default function Kiosk() {
         navigate('/document-scan');
       }, 2000);
     } else {
-      const nextQ = getNextQuestion(languageLabel, followUpCount);
+      const nextQ = data.next_question || getNextQuestion(languageLabel, followUpCount);
       addMessage(nextQ, 'bot');
       setConversationContext(prev => prev + `\nBot: ${nextQ}`);
     }

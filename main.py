@@ -3,7 +3,7 @@ MediKiosk v2 — AI-Powered Clinical Intake Backend
 100% Offline: Whisper (STT) + Ollama qwen2.5:3b (NLP) + llama3.2-vision (OCR)
 """
 
-from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, Form
+from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -23,19 +23,17 @@ import ollama
 import torch
 from transformers import pipeline
 
-OLLAMA_MODEL = "qwen2.5:3b"
-VISION_MODEL = "llama3.2-vision"
+OLLAMA_MODEL = "llama3.1"
+VISION_MODEL = "moondream"
 
 # Load Whisper
 device_id = 0 if torch.cuda.is_available() else -1
 print(f"Loading Whisper on {'CUDA' if device_id == 0 else 'CPU'}...")
 try:
-    whisper_pipeline = pipeline(
-        "automatic-speech-recognition",
-        model="openai/whisper-large-v3",
-        device=device_id,
-        torch_dtype=torch.float16 if device_id == 0 else torch.float32
-    )
+    from faster_whisper import WhisperModel
+    device_type = "cuda" if torch.cuda.is_available() else "cpu"
+    compute_type = "int8_float16" if device_type == "cuda" else "int8"
+    whisper_pipeline = WhisperModel("large-v3", device=device_type, compute_type=compute_type)
     print("✅ Whisper loaded.")
 except Exception as e:
     print(f"❌ Whisper failed: {e}")
@@ -95,7 +93,8 @@ PATIENT_JSON_TEMPLATE = """{
   "review_of_systems": "Other symptoms or 'None reported' (in English)",
   "prakriti": "Not assessed",
   "vikriti": "Not assessed",
-  "agni": "Not assessed"
+  "agni": "Not assessed",
+  "next_question": "Generated first question in patient's language"
 }"""
 
 FOLLOWUP_JSON_TEMPLATE = """{
@@ -110,7 +109,8 @@ FOLLOWUP_JSON_TEMPLATE = """{
     "vikriti": null,
     "agni": null
   },
-  "is_complete": false
+  "is_complete": false,
+  "next_question": "Generated question in patient's language"
 }"""
 
 DOCUMENT_JSON_TEMPLATE = """{
@@ -136,10 +136,12 @@ class PatientExtraction(BaseModel):
     prakriti: Optional[str] = "Not assessed"
     vikriti: Optional[str] = "Not assessed"
     agni: Optional[str] = "Not assessed"
+    next_question: Optional[str] = "Could you tell me more about this issue?"
 
 class FollowUpResponse(BaseModel):
     updates: dict = {}
     is_complete: bool = False
+    next_question: Optional[str] = "Is there anything else?"
 
 class DocumentExtraction(BaseModel):
     document_type: str = "Medical Document"
@@ -213,9 +215,11 @@ Patient's transcript: "{transcript}"
 TASK: Extract ALL clinical information from the transcript into the structured JSON fields.
 CRITICAL RULES:
 1. ALL extracted values MUST be translated to standard medical English.
-2. DO NOT include any {language} text in the output.
+2. DO NOT include any {language} text in the extracted values. The JSON values MUST be strictly English.
 3. DO NOT invent details. If something is not mentioned, use 'None reported' or 'Unknown'.
-4. Ensure the output is strictly valid JSON.
+4. Generate the `next_question` to ask the patient about their symptoms.
+   CRITICAL: `next_question` MUST BE IN {language}. It must use simple, everyday conversational language. Do not use complex or formal textbook words. It should sound like a friendly human talking.
+5. Ensure the output is strictly valid JSON.
 
 Output ONLY valid JSON:
 {PATIENT_JSON_TEMPLATE}"""
@@ -245,7 +249,7 @@ Output ONLY valid JSON:
     db.add(patient)
     db.commit()
     db.refresh(patient)
-    return patient
+    return patient, extraction.next_question
 
 
 # ═══════════════ ENDPOINTS ═══════════════
@@ -272,20 +276,27 @@ async def process_audio(
         tmp_path = tmp.name
 
     lang_code = LANGUAGE_CODES.get(language, "en")
-    result = whisper_pipeline(tmp_path, generate_kwargs={"language": lang_code})
-    transcript = result.get("text", "").strip()
+    segments, info = whisper_pipeline.transcribe(
+        tmp_path, 
+        language=lang_code, 
+        beam_size=5,
+        vad_filter=True,
+        condition_on_previous_text=False
+    )
+    transcript = " ".join([segment.text for segment in segments]).strip()
     os.remove(tmp_path)
     print(f"Transcript: {transcript}")
 
     # 2. LLM extraction
-    patient = build_patient_from_transcript(transcript, language, is_ayush, pt_id, db)
+    patient, next_q = build_patient_from_transcript(transcript, language, is_ayush, pt_id, db)
 
     return {
         "status": "success",
         "extracted_complaint": patient.chief_complaint,
         "is_emergency": patient.is_emergency,
         "patient_id": patient.patient_id,
-        "transcript": transcript
+        "transcript": transcript,
+        "next_question": next_q
     }
 
 
@@ -298,14 +309,15 @@ async def process_text(
     db: Session = Depends(get_db)
 ):
     pt_id = f"PT-{str(uuid.uuid4())[:4].upper()}"
-    patient = build_patient_from_transcript(transcript, language, is_ayush, pt_id, db)
+    patient, next_q = build_patient_from_transcript(transcript, language, is_ayush, pt_id, db)
 
     return {
         "status": "success",
         "extracted_complaint": patient.chief_complaint,
         "is_emergency": patient.is_emergency,
         "patient_id": patient.patient_id,
-        "transcript": transcript
+        "transcript": transcript,
+        "next_question": next_q
     }
 
 
@@ -317,6 +329,7 @@ async def follow_up_text(
     patient_id: str = Form(...),
     conversation_context: str = Form(""),
     is_ayush: bool = Form(False),
+    follow_up_count: int = Form(0),
     db: Session = Depends(get_db)
 ):
     patient = db.query(PatientRecord).filter(PatientRecord.patient_id == patient_id).first()
@@ -324,6 +337,14 @@ async def follow_up_text(
         raise HTTPException(status_code=404, detail="Patient not found")
 
     ayush_extra = " Also probe for Ayurvedic parameters if relevant." if is_ayush else " Do NOT probe for Ayurvedic parameters."
+
+    phase_instructions = {
+        0: "Ask if the pain or symptom spreads to any other part of the body, and ask about any other associated symptoms.",
+        1: "Ask about medications taken and aggravating/relieving factors related to the chief complaint.",
+        2: "Ask about past medical history and family history.",
+        3: "Ask about known allergies."
+    }
+    current_phase_instruction = phase_instructions.get(follow_up_count, "Ask if there is anything else they would like to add.")
 
     prompt = f"""You are a medical data extraction AI. The patient is speaking {language}.
 You are reviewing follow-up answers for a patient whose chief complaint is: "{patient.chief_complaint}".
@@ -335,12 +356,13 @@ Patient's latest answer: "{transcript}"
 
 TASK:
 1. Extract any NEW clinical information from the patient's latest answer.
-2. Put the extracted information into the most appropriate category in the "updates" dictionary (e.g. use "allergies" for allergic reactions, "personal_history" for lifestyle/smoking).
-3. DO NOT duplicate information across multiple categories. Each piece of information should only go into ONE category.
-4. If there is no new information for a category, you MUST set its value to null.
-5. ALL extracted values MUST be translated to standard medical English.
-6. DO NOT include any {language} text in the output.
-7. If the patient says "no", "nothing else", or indicates they are done, set is_complete to true.
+2. Put the extracted information into the most appropriate category in the "updates" dictionary.
+3. CRITICAL: The extracted information inside the "updates" dictionary MUST BE TRANSLATED TO ENGLISH. DO NOT output any {language} text inside the "updates" dictionary!
+4. DO NOT duplicate information across multiple categories. If there is no new info for a category, set it to null.
+5. Generate the `next_question` to ask the patient based on their complaint. 
+   CRITICAL: The `next_question` MUST BE IN {language}. It must use simple, everyday conversational language. Do not use complex or formal textbook words. It should sound like a friendly human talking.
+6. PHASE CONSTRAINT: For the `next_question`, you MUST strictly follow this instruction: {current_phase_instruction}{ayush_extra}
+7. If the patient indicates they are done, set is_complete to true.
 
 Output ONLY valid JSON:
 {FOLLOWUP_JSON_TEMPLATE}"""
@@ -370,6 +392,7 @@ Output ONLY valid JSON:
             "status": "success",
             "extracted_info": " | ".join(f"{k}: {v}" for k, v in result.updates.items() if v and str(v).lower() not in ["null", "none", ""]),
             "is_complete": result.is_complete,
+            "next_question": result.next_question,
             "transcript": transcript
         }
     except Exception as e:
@@ -378,6 +401,7 @@ Output ONLY valid JSON:
             "status": "success",
             "extracted_info": "Noted.",
             "is_complete": True,
+            "next_question": "Is there anything else?",
             "transcript": transcript
         }
 
@@ -390,6 +414,7 @@ async def follow_up_audio(
     patient_id: str = Form(...),
     conversation_context: str = Form(""),
     is_ayush: bool = Form(False),
+    follow_up_count: int = Form(0),
     db: Session = Depends(get_db)
 ):
     patient = db.query(PatientRecord).filter(PatientRecord.patient_id == patient_id).first()
@@ -402,15 +427,26 @@ async def follow_up_audio(
         tmp_path = tmp.name
 
     lang_code = LANGUAGE_CODES.get(language, "en")
-    result = whisper_pipeline(tmp_path, generate_kwargs={"language": lang_code})
-    transcript = result.get("text", "").strip()
+    segments, info = whisper_pipeline.transcribe(
+        tmp_path, 
+        language=lang_code, 
+        beam_size=5,
+        vad_filter=True,
+        condition_on_previous_text=False
+    )
+    transcript = " ".join([segment.text for segment in segments]).strip()
     os.remove(tmp_path)
     print(f"Follow-up transcript: {transcript}")
 
-    # Reuse text handler logic
-    from fastapi import Request
-    # Manually call the same logic
     ayush_extra = " Also probe for Ayurvedic parameters if relevant." if is_ayush else " Do NOT probe for Ayurvedic parameters."
+
+    phase_instructions = {
+        0: "Ask if the pain or symptom spreads to any other part of the body, and ask about any other associated symptoms.",
+        1: "Ask about medications taken and aggravating/relieving factors related to the chief complaint.",
+        2: "Ask about past medical history and family history.",
+        3: "Ask about known allergies."
+    }
+    current_phase_instruction = phase_instructions.get(follow_up_count, "Ask if there is anything else they would like to add.")
 
     prompt = f"""You are a medical data extraction AI. The patient is speaking {language}.
 You are reviewing follow-up answers for a patient whose chief complaint is: "{patient.chief_complaint}".
@@ -422,12 +458,12 @@ Patient's latest answer: "{transcript}"
 
 TASK:
 1. Extract any NEW clinical information from the patient's latest answer.
-2. Put the extracted information into the most appropriate category in the "updates" dictionary (e.g. use "allergies" for allergic reactions, "personal_history" for lifestyle/smoking).
-3. DO NOT duplicate information across multiple categories. Each piece of information should only go into ONE category.
-4. If there is no new information for a category, you MUST set its value to null.
-5. ALL extracted values MUST be translated to standard medical English.
-6. DO NOT include any {language} text in the output.
-7. If the patient says "no", "nothing else", or indicates they are done, set is_complete to true.
+2. Put the extracted information into the most appropriate category in the "updates" dictionary.
+3. CRITICAL: The extracted information inside the "updates" dictionary MUST BE TRANSLATED TO ENGLISH. DO NOT output any {language} text inside the "updates" dictionary!
+4. DO NOT duplicate information across multiple categories. If there is no new info for a category, set it to null.
+5. Generate the `next_question` to ask the patient based on their complaint. CRITICAL: The `next_question` MUST BE IN {language}.
+6. PHASE CONSTRAINT: For the `next_question`, you MUST strictly follow this instruction: {current_phase_instruction}{ayush_extra}
+7. If the patient indicates they are done, set is_complete to true.
 
 Output ONLY valid JSON:
 {FOLLOWUP_JSON_TEMPLATE}"""
@@ -456,6 +492,7 @@ Output ONLY valid JSON:
             "status": "success",
             "extracted_info": "Noted.",
             "is_complete": fu_result.is_complete,
+            "next_question": fu_result.next_question,
             "transcript": transcript
         }
     except Exception as e:
@@ -464,13 +501,93 @@ Output ONLY valid JSON:
             "status": "success",
             "extracted_info": "Noted.",
             "is_complete": True,
+            "next_question": "Is there anything else?",
             "transcript": transcript
         }
+
+
+def process_document_background(file_bytes: bytes, filename: str, content_type: str, file_url: str, patient_id_db: int):
+    db = SessionLocal()
+    try:
+        patient = db.query(PatientRecord).filter(PatientRecord.id == patient_id_db).first()
+        if not patient:
+            return
+            
+        structured_data = None
+        extracted_text = ""
+        try:
+            prompt_base = """Analyze this medical document carefully.
+
+Extract into JSON:
+- document_type: Name or type of report (e.g. CBC, MRI, Prescription)
+- diagnoses: list of clinical diagnoses (English)
+- medications: list of medicines with dosages (English)
+- flagged_values: list of abnormal lab values or critical findings
+- document_date: date on document, or 'Unknown'
+- summary: concise summary of key findings
+
+Output ONLY valid JSON:
+""" + DOCUMENT_JSON_TEMPLATE
+
+            if filename.lower().endswith('.pdf') or content_type == 'application/pdf':
+                import fitz
+                pdf_doc = fitz.open(stream=file_bytes, filetype="pdf")
+                for page in pdf_doc:
+                    extracted_text += page.get_text() + "\n"
+                prompt = f"Extracted Text:\n{extracted_text}\n\n{prompt_base}"
+                response_text = call_llm(prompt)
+            else:
+                print("Using llama3.2-vision for image in background...")
+                response_text = call_llm(prompt_base, image_bytes=file_bytes)
+
+            result_json = json.loads(extract_json_string(response_text))
+            result_json = unwrap_json(result_json)
+            extraction = DocumentExtraction(**result_json)
+            structured_data = {
+                "document_type": extraction.document_type,
+                "diagnoses": extraction.diagnoses,
+                "medications": extraction.medications,
+                "flagged_values": extraction.flagged_values,
+                "document_date": extraction.document_date,
+                "summary": extraction.summary,
+                "file_url": file_url,
+                "raw_text": extracted_text
+            }
+            print(f"Background Extracted: {structured_data}")
+        except Exception as e:
+            print(f"Background Document processing failed: {e}")
+
+        if not structured_data:
+            structured_data = {
+                "document_type": "Unknown Document",
+                "diagnoses": ["Extraction failed — please try again"],
+                "medications": [],
+                "flagged_values": [],
+                "document_date": "Unknown",
+                "summary": "Could not process this document. Please try a clearer image.",
+                "file_url": file_url,
+                "raw_text": extracted_text
+            }
+
+        existing = []
+        if patient.flagged_lab_values and patient.flagged_lab_values != "[]":
+            try:
+                parsed = json.loads(patient.flagged_lab_values)
+                if isinstance(parsed, list):
+                    existing = [i for i in parsed if isinstance(i, dict)]
+            except:
+                pass
+        existing.append(structured_data)
+        patient.flagged_lab_values = json.dumps(existing)
+        db.commit()
+    finally:
+        db.close()
 
 
 # ── Document Processing ──
 @app.post("/api/process-document")
 async def process_document(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     patient_id: Optional[str] = Form(None),
     db: Session = Depends(get_db)
@@ -484,7 +601,7 @@ async def process_document(
         raise HTTPException(status_code=404, detail="No patient found")
 
     file_bytes = await file.read()
-    print(f"Document: {file.filename}, {len(file_bytes)} bytes")
+    print(f"Document received: {file.filename}, {len(file_bytes)} bytes. Dispatching background task.")
 
     # Save file for viewing later
     os.makedirs("uploads", exist_ok=True)
@@ -498,78 +615,30 @@ async def process_document(
     base_url = "http://localhost:8000" 
     file_url = f"{base_url}/uploads/{saved_filename}"
 
-    structured_data = None
-    extracted_text = ""
+    # Dispatch to background task
+    background_tasks.add_task(
+        process_document_background,
+        file_bytes,
+        file.filename,
+        file.content_type,
+        file_url,
+        patient.id
+    )
 
-    try:
-        prompt_base = """Analyze this medical document carefully.
-
-Extract into JSON:
-- document_type: Name or type of report (e.g. CBC, MRI, Prescription)
-- diagnoses: list of clinical diagnoses (English)
-- medications: list of medicines with dosages (English)
-- flagged_values: list of abnormal lab values or critical findings
-- document_date: date on document, or 'Unknown'
-- summary: concise summary of key findings
-
-Output ONLY valid JSON:
-""" + DOCUMENT_JSON_TEMPLATE
-
-        if file.filename.lower().endswith('.pdf') or file.content_type == 'application/pdf':
-            import fitz
-            pdf_doc = fitz.open(stream=file_bytes, filetype="pdf")
-            for page in pdf_doc:
-                extracted_text += page.get_text() + "\n"
-            prompt = f"Extracted Text:\n{extracted_text}\n\n{prompt_base}"
-            response_text = call_llm(prompt)
-        else:
-            # Use Vision model directly
-            print("Using llama3.2-vision for image...")
-            response_text = call_llm(prompt_base, image_bytes=file_bytes)
-
-        result_json = json.loads(extract_json_string(response_text))
-        result_json = unwrap_json(result_json)
-        extraction = DocumentExtraction(**result_json)
-        structured_data = {
-            "document_type": extraction.document_type,
-            "diagnoses": extraction.diagnoses,
-            "medications": extraction.medications,
-            "flagged_values": extraction.flagged_values,
-            "document_date": extraction.document_date,
-            "summary": extraction.summary,
-            "file_url": file_url,
-            "raw_text": extracted_text
-        }
-        print(f"Extracted: {structured_data}")
-    except Exception as e:
-        print(f"Document processing failed: {e}")
-
-    if not structured_data:
-        structured_data = {
-            "document_type": "Unknown Document",
-            "diagnoses": ["Extraction failed — please try again"],
+    return {
+        "status": "success", 
+        "message": "Document is being processed asynchronously.",
+        "extracted_document": {
+            "document_type": "Processing...",
+            "diagnoses": ["Analyzing document in background..."],
             "medications": [],
             "flagged_values": [],
-            "document_date": "Unknown",
-            "summary": "Could not process this document. Please try a clearer image.",
+            "document_date": "Pending",
+            "summary": "Document securely uploaded and queued for processing.",
             "file_url": file_url,
-            "raw_text": extracted_text
+            "raw_text": ""
         }
-
-    # Save to patient
-    existing = []
-    if patient.flagged_lab_values and patient.flagged_lab_values != "[]":
-        try:
-            parsed = json.loads(patient.flagged_lab_values)
-            if isinstance(parsed, list):
-                existing = [i for i in parsed if isinstance(i, dict)]
-        except:
-            pass
-    existing.append(structured_data)
-    patient.flagged_lab_values = json.dumps(existing)
-    db.commit()
-
-    return {"status": "success", "extracted_document": structured_data}
+    }
 
 
 # ── Red Flag Check ──
@@ -720,4 +789,4 @@ async def demo_data(db: Session = Depends(get_db)):
 
 if __name__ == "__main__":
     print("🏥 Starting MediKiosk v2 Backend (Offline Mode)...")
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
