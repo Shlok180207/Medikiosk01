@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 
@@ -7,6 +7,75 @@ const API_BASE_URL = 'http://localhost:8000/api';
 export default function Kiosk() {
   const navigate = useNavigate();
   const { languageLabel, languageCode, speechCode, isAyush, patientId, setPatientId, setClinicalData, t } = useApp();
+
+  // ── TTS (Text-to-Speech) for accessibility ──
+  const audioRef = useRef(null);
+  const ttsUnlockedRef = useRef(false);
+  const pendingSpeechRef = useRef(null);
+
+  const speakText = useCallback((text) => {
+    if (!text) return;
+    const skip = ['Processing...', 'Listening...', 'Noted.', 'Skipping...'];
+    if (skip.some(s => text.startsWith(s))) return;
+
+    try {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+      const lang = languageLabel || 'Hindi';
+      const encoded = encodeURIComponent(text);
+      const audio = new Audio(`${API_BASE_URL}/tts?text=${encoded}&lang=${lang}`);
+      audioRef.current = audio;
+
+      const playPromise = audio.play();
+      if (playPromise !== undefined) {
+        playPromise
+          .then(() => {
+            ttsUnlockedRef.current = true;
+          })
+          .catch(err => {
+            console.warn('Audio play error, falling back to Web Speech API:', err);
+            if (window.speechSynthesis) {
+              window.speechSynthesis.cancel();
+              const utterance = new SpeechSynthesisUtterance(text);
+              utterance.lang = speechCode || 'hi-IN';
+              utterance.rate = 0.9;
+              window.speechSynthesis.speak(utterance);
+            }
+          });
+      }
+    } catch (err) {
+      console.error('TTS error:', err);
+    }
+  }, [languageLabel, speechCode]);
+
+  // Unlock audio on first user click or tap
+  useEffect(() => {
+    pendingSpeechRef.current = getGreeting(languageLabel);
+
+    const unlockTTS = () => {
+      if (!ttsUnlockedRef.current && pendingSpeechRef.current) {
+        speakText(pendingSpeechRef.current);
+        pendingSpeechRef.current = null;
+      }
+      document.removeEventListener('click', unlockTTS);
+      document.removeEventListener('touchstart', unlockTTS);
+    };
+
+    document.addEventListener('click', unlockTTS);
+    document.addEventListener('touchstart', unlockTTS);
+
+    return () => {
+      document.removeEventListener('click', unlockTTS);
+      document.removeEventListener('touchstart', unlockTTS);
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+      window.speechSynthesis?.cancel();
+    };
+  }, [languageLabel, speakText]);
 
   // Chat state
   const [messages, setMessages] = useState([
@@ -34,7 +103,11 @@ export default function Kiosk() {
   const addMessage = useCallback((text, type) => {
     setMessages(prev => [...prev, { type, text }]);
     scrollToBottom();
-  }, [scrollToBottom]);
+    // Auto-speak bot messages
+    if (type === 'bot') {
+      setTimeout(() => speakText(text), 200);
+    }
+  }, [scrollToBottom, speakText]);
 
   const removeLastBotMessage = useCallback(() => {
     setMessages(prev => {
@@ -227,11 +300,15 @@ export default function Kiosk() {
 
   const handleFollowUpResponse = (data) => {
     removeLastBotMessage();
+    if (!data) {
+      addMessage('Sorry, there was an error processing your response.', 'bot');
+      return;
+    }
     setConversationContext(prev => prev + `\nPatient: ${data.transcript || ''}`);
     setFollowUpCount(prev => prev + 1);
     setProgress(prev => Math.min(prev + 20, 90));
 
-    if (data.is_complete || followUpCount >= 4) {
+    if (followUpCount >= 5 || (data.is_complete && followUpCount >= 5)) {
       addMessage('Thank you for providing all the information.', 'bot');
       setConversationPhase('complete');
       setProgress(100);
@@ -300,8 +377,26 @@ export default function Kiosk() {
         {messages.map((msg, i) => (
           <div key={i} className={`chat-bubble chat-bubble-${msg.type}`}>
             {msg.type === 'bot' && (
-              <div style={{ fontSize: 'var(--font-size-xs)', fontWeight: 600, color: 'var(--color-primary)', marginBottom: 'var(--space-1)' }}>
-                🏥 MediKiosk AI
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--space-1)' }}>
+                <div style={{ fontSize: 'var(--font-size-xs)', fontWeight: 600, color: 'var(--color-primary)' }}>
+                  🏥 MediKiosk AI
+                </div>
+                {msg.text !== 'Processing...' && msg.text !== 'Listening...' && (
+                  <button
+                    onClick={() => speakText(msg.text)}
+                    style={{
+                      background: 'none', border: 'none', cursor: 'pointer',
+                      fontSize: 'var(--font-size-lg)', padding: '2px 6px',
+                      borderRadius: 'var(--radius-sm)', opacity: 0.7,
+                      transition: 'opacity 0.2s'
+                    }}
+                    onMouseEnter={e => e.target.style.opacity = 1}
+                    onMouseLeave={e => e.target.style.opacity = 0.7}
+                    title="Replay audio"
+                  >
+                    🔊
+                  </button>
+                )}
               </div>
             )}
             {msg.text === 'Processing...' ? (

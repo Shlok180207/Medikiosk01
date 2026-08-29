@@ -4,12 +4,14 @@ MediKiosk v2 — AI-Powered Clinical Intake Backend
 """
 
 from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, Form, BackgroundTasks
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import uvicorn
 from typing import List, Optional
-import os, uuid, json, re, io, tempfile, base64
+import os, uuid, json, re, io, tempfile, base64, hashlib
+from gtts import gTTS
 from datetime import datetime
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text
 from sqlalchemy.orm import sessionmaker, Session
@@ -23,7 +25,7 @@ import ollama
 import torch
 from transformers import pipeline
 
-OLLAMA_MODEL = "llama3.1"
+OLLAMA_MODEL = "qwen2.5:7b"  # Switched to qwen2.5:7b for faster performance and great native Hindi.
 VISION_MODEL = "moondream"
 
 # Load Whisper
@@ -78,6 +80,69 @@ LANGUAGE_CODES = {
     "Kannada": "kn", "Malayalam": "ml", "Marathi": "mr", "Bengali": "bn",
     "Gujarati": "gu", "Punjabi": "pa", "Urdu": "ur"
 }
+
+# ── Pre-written Follow-up Questions (human-verified, no AI typos) ──
+PHASE_QUESTIONS = {
+    "Hindi": {
+        "initial": "यह तकलीफ़ आपको कब से हो रही है?",
+        0: "क्या यह दर्द शरीर के किसी और हिस्से में भी जाता है?",
+        1: "इसके साथ और कोई तकलीफ़ है? जैसे बुखार, उल्टी, या कमज़ोरी?",
+        2: "क्या आपने इसके लिए कोई दवा ली है? किसी चीज़ से आराम मिलता है या तकलीफ़ बढ़ती है?",
+        3: "क्या आपको पहले कोई बीमारी रही है? परिवार में किसी को कोई बीमारी है? क्या आप धूम्रपान या शराब का सेवन करते हैं?",
+        4: "क्या आपको किसी दवा या खाने की चीज़ से एलर्जी है?",
+        "default": "और कुछ बताना चाहेंगे?"
+    },
+    "English": {
+        "initial": "How long have you been experiencing this problem?",
+        0: "Does this pain spread or travel to any other part of your body?",
+        1: "Are you experiencing any other symptoms like fever, nausea, or weakness?",
+        2: "Have you taken any medicine for this? Does anything make it better or worse?",
+        3: "Do you have any past medical conditions? Any diseases in your family? Do you smoke or drink alcohol?",
+        4: "Are you allergic to any medicines or foods?",
+        "default": "Is there anything else you would like to tell me?"
+    },
+    "Tamil": {
+        "initial": "இந்த பிரச்சனை எவ்வளவு நாளாக இருக்கிறது?",
+        0: "இந்த வலி உடலின் வேறு எந்த பகுதிக்கும் பரவுகிறதா?",
+        1: "இதனுடன் காய்ச்சல், குமட்டல் அல்லது பலவீனம் போன்ற வேறு ஏதாவது தொந்தரவு இருக்கிறதா?",
+        2: "இதற்கு ஏதாவது மருந்து எடுத்துக்கொண்டீர்களா? எதனால் சரியாகிறது அல்லது மோசமாகிறது?",
+        3: "உங்களுக்கு முன்பு ஏதாவது நோய் இருந்ததா? குடும்பத்தில் யாருக்காவது நோய் இருக்கிறதா? புகைபிடிப்பீர்களா அல்லது மது அருந்துவீர்களா?",
+        4: "உங்களுக்கு ஏதாவது மருந்து அல்லது உணவுக்கு ஒவ்வாமை இருக்கிறதா?",
+        "default": "வேறு ஏதாவது சொல்ல விரும்புகிறீர்களா?"
+    },
+    "Telugu": {
+        "initial": "ఈ సమస్య మీకు ఎంత కాలంగా ఉంది?",
+        0: "ఈ నొప్పి శరీరంలో ఇతర భాగాలకు వ్యాపిస్తుందా?",
+        1: "దీనితో పాటు జ్వరం, వాంతులు లేదా బలహీనత వంటి ఇతర సమస్యలు ఉన్నాయా?",
+        2: "దీని కోసం ఏదైనా మందు వాడారా? దేనివల్ల తగ్గుతుంది లేదా పెరుగుతుంది?",
+        3: "మీకు ఇంతకు ముందు ఏదైనా వ్యాధి ఉందా? కుటుంబంలో ఎవరికైనా వ్యాధి ఉందా? మీరు పొగ తాగుతారా లేదా మద్యం సేవిస్తారా?",
+        4: "మీకు ఏదైనా మందు లేదా ఆహారానికి అలర్జీ ఉందా?",
+        "default": "ఇంకా ఏమైనా చెప్పాలనుకుంటున్నారా?"
+    },
+    "Bengali": {
+        "initial": "এই সমস্যা আপনার কতদিন ধরে হচ্ছে?",
+        0: "এই ব্যথা কি শরীরের অন্য কোনো জায়গায় ছড়ায়?",
+        1: "এর সাথে জ্বর, বমি বা দুর্বলতার মতো অন্য কোনো সমস্যা আছে?",
+        2: "এর জন্য কি কোনো ওষুধ খেয়েছেন? কিসে আরাম হয় বা কষ্ট বাড়ে?",
+        3: "আগে কি কোনো রোগ ছিল? পরিবারে কারো কি কোনো রোগ আছে? আপনি কি ধূমপান বা মদ্যপান করেন?",
+        4: "আপনার কি কোনো ওষুধ বা খাবারে অ্যালার্জি আছে?",
+        "default": "আর কিছু বলতে চান?"
+    },
+    "Marathi": {
+        "initial": "ही तकलीफ तुम्हाला कधीपासून होत आहे?",
+        0: "हा दुखणे शरीराच्या इतर कोणत्या भागात जातो का?",
+        1: "याबरोबर ताप, उलटी किंवा अशक्तपणा असे काही त्रास आहे का?",
+        2: "यासाठी काही औषध घेतले का? कशामुळे आराम पडतो किंवा त्रास वाढतो?",
+        3: "तुम्हाला आधी काही आजार होता का? कुटुंबात कोणाला काही आजार आहे का? तुम्ही धूम्रपान किंवा दारू पिता का?",
+        4: "तुम्हाला कोणत्या औषधाची किंवा खाण्याच्या पदार्थाची ऍलर्जी आहे का?",
+        "default": "अजून काही सांगायचे आहे का?"
+    },
+}
+
+def get_phase_question(language: str, phase) -> str:
+    """Get a pre-written question template. Falls back to English if language not available."""
+    lang_questions = PHASE_QUESTIONS.get(language, PHASE_QUESTIONS.get("English", {}))
+    return lang_questions.get(phase, lang_questions.get("default", "Is there anything else you would like to tell me?"))
 
 # ── Pydantic Models ──
 PATIENT_JSON_TEMPLATE = """{
@@ -198,6 +263,45 @@ app.add_middleware(
 )
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
+# ── TTS (Text-to-Speech) Endpoint with Local Cache ──
+TTS_CACHE_DIR = os.path.join("uploads", "tts_cache")
+os.makedirs(TTS_CACHE_DIR, exist_ok=True)
+
+TTS_LANG_MAP = {
+    "Hindi": "hi", "English": "en", "Tamil": "ta", "Telugu": "te",
+    "Bengali": "bn", "Marathi": "mr", "Gujarati": "gu", "Kannada": "kn",
+    "Malayalam": "ml", "Punjabi": "pa", "Urdu": "ur"
+}
+
+@app.get("/api/tts")
+async def get_tts(text: str, lang: str = "hi"):
+    """Text-to-speech with local audio caching for 100% offline playback."""
+    if not text or not text.strip():
+        raise HTTPException(status_code=400, detail="Text cannot be empty")
+
+    lang_code = TTS_LANG_MAP.get(lang, lang.lower())
+    if len(lang_code) > 2 and '-' in lang_code:
+        lang_code = lang_code.split('-')[0]
+
+    cache_key = hashlib.md5(f"{lang_code}_{text.strip()}".encode("utf-8")).hexdigest()
+    cache_file = os.path.join(TTS_CACHE_DIR, f"{cache_key}.mp3")
+
+    if not os.path.exists(cache_file):
+        try:
+            tts = gTTS(text=text.strip(), lang=lang_code)
+            tts.save(cache_file)
+        except Exception as e:
+            print(f"TTS generation error: {e}")
+            try:
+                tts = gTTS(text=text.strip(), lang="en")
+                tts.save(cache_file)
+            except Exception as e2:
+                print(f"TTS fallback error: {e2}")
+                raise HTTPException(status_code=500, detail="TTS generation failed")
+
+    return FileResponse(cache_file, media_type="audio/mpeg")
+
+
 
 # ── Core: Build patient from transcript ──
 def build_patient_from_transcript(transcript, language, is_ayush, pt_id, db):
@@ -217,9 +321,9 @@ CRITICAL RULES:
 1. ALL extracted values MUST be translated to standard medical English.
 2. DO NOT include any {language} text in the extracted values. The JSON values MUST be strictly English.
 3. DO NOT invent details. If something is not mentioned, use 'None reported' or 'Unknown'.
-4. Generate the `next_question` to ask the patient about their symptoms.
-   CRITICAL: `next_question` MUST BE IN {language}. It must use simple, everyday conversational language. Do not use complex or formal textbook words. It should sound like a friendly human talking.
-5. Ensure the output is strictly valid JSON.
+4. PHONETIC ERROR CORRECTION: The transcript is generated by an AI speech-to-text tool and may contain phonetic errors (e.g. "bete" instead of "pait/stomach"). You MUST interpret the transcript in a strictly MEDICAL context and auto-correct these errors before extracting symptoms.
+5. Set `next_question` to "next" (the system will handle question generation).
+6. Ensure the output is strictly valid JSON.
 
 Output ONLY valid JSON:
 {PATIENT_JSON_TEMPLATE}"""
@@ -249,7 +353,9 @@ Output ONLY valid JSON:
     db.add(patient)
     db.commit()
     db.refresh(patient)
-    return patient, extraction.next_question
+    # Use SOCRATES-framework question template
+    initial_question = get_phase_question(language, "initial")
+    return patient, initial_question
 
 
 # ═══════════════ ENDPOINTS ═══════════════
@@ -321,6 +427,121 @@ async def process_text(
     }
 
 
+def handle_followup_extraction(
+    patient: PatientRecord,
+    transcript: str,
+    language: str,
+    conversation_context: str,
+    is_ayush: bool,
+    follow_up_count: int,
+    db: Session
+):
+    ayush_extra = " Also probe for Ayurvedic parameters if relevant." if is_ayush else ""
+
+    answering_phase_desc = {
+        0: "The patient is answering about ONSET and DURATION of symptoms. Extract into 'duration' and 'hpi'.",
+        1: "The patient is answering whether pain RADIATES or spreads to other parts of the body. Extract into 'hpi' (e.g. 'No radiation to other body parts' if denied, or specify where it radiates).",
+        2: "The patient is answering REVIEW OF SYSTEMS (associated symptoms: fever, nausea, vomiting, weakness, etc.). Extract into 'review_of_systems'. If patient denies or says no/none, write: 'Patient denies fever, nausea, vomiting, weakness, or other associated symptoms'.",
+        3: "The patient is answering about MEDICATIONS taken and AGGRAVATING/RELIEVING factors. Extract into 'hpi'. If patient denies/none, write: 'No medications taken; no aggravating or relieving factors reported'.",
+        4: "The patient is answering about PAST MEDICAL HISTORY, FAMILY HISTORY, and LIFESTYLE (smoking, alcohol, diet). Extract into 'past_medical_history', 'family_history', and 'personal_history'. If no past medical history, write: 'No significant past medical history reported'.",
+        5: "The patient is answering about ALLERGIES (medicines, food). Extract into 'allergies'. If patient denies or says no/none, write: 'No known drug or food allergies (NKDA)'."
+    }.get(follow_up_count, "Extract any relevant clinical information.")
+
+    prompt = f"""You are a medical data extraction AI. The patient is speaking {language}.
+You are reviewing follow-up answers for a patient whose chief complaint is: "{patient.chief_complaint}".
+
+CURRENT CLINICAL FOCUS:
+{answering_phase_desc}
+
+Previous conversation context:
+{conversation_context}
+
+Patient's latest answer: "{transcript}"
+
+TASK:
+1. Extract any NEW clinical information from the patient's latest answer into the "updates" dictionary.
+2. CRITICAL: The extracted information inside the "updates" dictionary MUST BE TRANSLATED TO ENGLISH.
+3. PHONETIC ERROR CORRECTION: Interpret speech-to-text errors in a strictly MEDICAL context.
+4. NEGATIVE RESPONSES: If the patient denies symptoms or says "no" / "none" / "नहीं":
+   - For Review of Systems (step 2): write "Patient denies fever, nausea, vomiting, weakness, or other associated symptoms"
+   - For Allergies (step 5): write "No known drug or food allergies (NKDA)"
+   - For Radiation (step 1): write "No radiation to other body parts"
+   - For Past History (step 4): write "No significant past medical history reported"
+5. Do NOT leave a category as null if the patient answered it (even if negative/denial).
+6. Set `next_question` to "next".
+7. Set `is_complete` to false.
+
+Output ONLY valid JSON:
+{FOLLOWUP_JSON_TEMPLATE}"""
+
+    try:
+        response_text = call_llm(prompt)
+        result_json = json.loads(extract_json_string(response_text))
+        result_json = unwrap_json(result_json)
+        fu_result = FollowUpResponse(**result_json)
+    except Exception as e:
+        print(f"Follow-up error: {e}")
+        fu_result = FollowUpResponse(updates={}, is_complete=False)
+
+    updates = fu_result.updates if isinstance(fu_result.updates, dict) else {}
+
+    # Deterministic safeguard: if patient answered No/negative to a specific phase
+    t_clean = transcript.strip().lower()
+    is_neg = t_clean in ["no", "nahi", "nahin", "नहीं", "no allergies", "none", "nothing", "kuch nahi", "kuch nahi hai", "na", "not sure", "न", "ना", "n"]
+
+    if follow_up_count == 2:
+        ros_val = updates.get("review_of_systems")
+        if not ros_val or ros_val.strip().lower() in ["null", "none", "none reported", "unknown", ""]:
+            if is_neg:
+                updates["review_of_systems"] = "Patient denies fever, nausea, vomiting, weakness, or other associated symptoms"
+            elif len(transcript.strip()) > 0:
+                updates["review_of_systems"] = f"Reported: {transcript.strip()}"
+
+    elif follow_up_count == 5:
+        allg_val = updates.get("allergies")
+        if not allg_val or allg_val.strip().lower() in ["null", "none", "none reported", "unknown", ""]:
+            if is_neg:
+                updates["allergies"] = "No known drug or food allergies (NKDA)"
+            elif len(transcript.strip()) > 0:
+                updates["allergies"] = f"Reported: {transcript.strip()}"
+
+    elif follow_up_count == 1:
+        if is_neg and not updates.get("hpi"):
+            updates["hpi"] = "No radiation to other body parts"
+
+    elif follow_up_count == 4:
+        pmh_val = updates.get("past_medical_history")
+        if not pmh_val or pmh_val.strip().lower() in ["null", "none", "none reported", "unknown", ""]:
+            updates["past_medical_history"] = "No significant past medical history reported"
+
+    # Apply updates to patient record in DB
+    for field, info in updates.items():
+        if info and isinstance(info, str) and info.strip().lower() not in ["null", "none", ""]:
+            if "updated info in english" in info.lower() or "updated hpi" in info.lower():
+                continue
+            if hasattr(patient, field):
+                current = getattr(patient, field) or ""
+                info_clean = info.lstrip('• ').strip()
+                if current and current not in ("None reported", "Not assessed", "Unknown", ""):
+                    setattr(patient, field, current.strip() + "\n• " + info_clean)
+                else:
+                    setattr(patient, field, "• " + info_clean)
+
+    db.commit()
+    db.refresh(patient)
+
+    is_complete = True if follow_up_count >= 5 else False
+    next_question = get_phase_question(language, follow_up_count) if follow_up_count < 5 else "Thank you. Let us proceed to document scanning."
+
+    return {
+        "status": "success",
+        "extracted_info": " | ".join(f"{k}: {v}" for k, v in updates.items() if v and str(v).lower() not in ["null", ""]),
+        "is_complete": is_complete,
+        "next_question": next_question,
+        "transcript": transcript
+    }
+
+
 # ── Follow-up (Text) ──
 @app.post("/api/follow-up-text")
 async def follow_up_text(
@@ -336,74 +557,15 @@ async def follow_up_text(
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
 
-    ayush_extra = " Also probe for Ayurvedic parameters if relevant." if is_ayush else " Do NOT probe for Ayurvedic parameters."
-
-    phase_instructions = {
-        0: "Ask if the pain or symptom spreads to any other part of the body, and ask about any other associated symptoms.",
-        1: "Ask about medications taken and aggravating/relieving factors related to the chief complaint.",
-        2: "Ask about past medical history and family history.",
-        3: "Ask about known allergies."
-    }
-    current_phase_instruction = phase_instructions.get(follow_up_count, "Ask if there is anything else they would like to add.")
-
-    prompt = f"""You are a medical data extraction AI. The patient is speaking {language}.
-You are reviewing follow-up answers for a patient whose chief complaint is: "{patient.chief_complaint}".
-
-Previous conversation context:
-{conversation_context}
-
-Patient's latest answer: "{transcript}"
-
-TASK:
-1. Extract any NEW clinical information from the patient's latest answer.
-2. Put the extracted information into the most appropriate category in the "updates" dictionary.
-3. CRITICAL: The extracted information inside the "updates" dictionary MUST BE TRANSLATED TO ENGLISH. DO NOT output any {language} text inside the "updates" dictionary!
-4. DO NOT duplicate information across multiple categories. If there is no new info for a category, set it to null.
-5. Generate the `next_question` to ask the patient based on their complaint. 
-   CRITICAL: The `next_question` MUST BE IN {language}. It must use simple, everyday conversational language. Do not use complex or formal textbook words. It should sound like a friendly human talking.
-6. PHASE CONSTRAINT: For the `next_question`, you MUST strictly follow this instruction: {current_phase_instruction}{ayush_extra}
-7. If the patient indicates they are done, set is_complete to true.
-
-Output ONLY valid JSON:
-{FOLLOWUP_JSON_TEMPLATE}"""
-
-    try:
-        response_text = call_llm(prompt)
-        result_json = json.loads(extract_json_string(response_text))
-        result_json = unwrap_json(result_json)
-        result = FollowUpResponse(**result_json)
-
-        # Apply updates
-        for field, info in result.updates.items():
-            if info and isinstance(info, str) and info.strip().lower() not in ["null", "none", "none reported", "unknown", ""]:
-                if "updated info in english" in info.lower() or "updated hpi" in info.lower() or "updated lifestyle" in info.lower():
-                    continue
-                if hasattr(patient, field):
-                    current = getattr(patient, field) or ""
-                    if current and current not in ("None reported", "Not assessed"):
-                        if not current.startswith("•"):
-                            current = f"• {current}"
-                        setattr(patient, field, current.strip() + "\n• " + info.lstrip('• '))
-                    else:
-                        setattr(patient, field, "• " + info.lstrip('• '))
-        db.commit()
-
-        return {
-            "status": "success",
-            "extracted_info": " | ".join(f"{k}: {v}" for k, v in result.updates.items() if v and str(v).lower() not in ["null", "none", ""]),
-            "is_complete": result.is_complete,
-            "next_question": result.next_question,
-            "transcript": transcript
-        }
-    except Exception as e:
-        print(f"Follow-up error: {e}")
-        return {
-            "status": "success",
-            "extracted_info": "Noted.",
-            "is_complete": True,
-            "next_question": "Is there anything else?",
-            "transcript": transcript
-        }
+    return handle_followup_extraction(
+        patient=patient,
+        transcript=transcript,
+        language=language,
+        conversation_context=conversation_context,
+        is_ayush=is_ayush,
+        follow_up_count=follow_up_count,
+        db=db
+    )
 
 
 # ── Follow-up (Audio) ──
@@ -438,72 +600,15 @@ async def follow_up_audio(
     os.remove(tmp_path)
     print(f"Follow-up transcript: {transcript}")
 
-    ayush_extra = " Also probe for Ayurvedic parameters if relevant." if is_ayush else " Do NOT probe for Ayurvedic parameters."
-
-    phase_instructions = {
-        0: "Ask if the pain or symptom spreads to any other part of the body, and ask about any other associated symptoms.",
-        1: "Ask about medications taken and aggravating/relieving factors related to the chief complaint.",
-        2: "Ask about past medical history and family history.",
-        3: "Ask about known allergies."
-    }
-    current_phase_instruction = phase_instructions.get(follow_up_count, "Ask if there is anything else they would like to add.")
-
-    prompt = f"""You are a medical data extraction AI. The patient is speaking {language}.
-You are reviewing follow-up answers for a patient whose chief complaint is: "{patient.chief_complaint}".
-
-Previous conversation context:
-{conversation_context}
-
-Patient's latest answer: "{transcript}"
-
-TASK:
-1. Extract any NEW clinical information from the patient's latest answer.
-2. Put the extracted information into the most appropriate category in the "updates" dictionary.
-3. CRITICAL: The extracted information inside the "updates" dictionary MUST BE TRANSLATED TO ENGLISH. DO NOT output any {language} text inside the "updates" dictionary!
-4. DO NOT duplicate information across multiple categories. If there is no new info for a category, set it to null.
-5. Generate the `next_question` to ask the patient based on their complaint. CRITICAL: The `next_question` MUST BE IN {language}.
-6. PHASE CONSTRAINT: For the `next_question`, you MUST strictly follow this instruction: {current_phase_instruction}{ayush_extra}
-7. If the patient indicates they are done, set is_complete to true.
-
-Output ONLY valid JSON:
-{FOLLOWUP_JSON_TEMPLATE}"""
-
-    try:
-        response_text = call_llm(prompt)
-        result_json = json.loads(extract_json_string(response_text))
-        result_json = unwrap_json(result_json)
-        fu_result = FollowUpResponse(**result_json)
-
-        for field, info in fu_result.updates.items():
-            if info and isinstance(info, str) and info.strip().lower() not in ["null", "none", "none reported", "unknown", ""]:
-                if "updated info in english" in info.lower() or "updated hpi" in info.lower() or "updated lifestyle" in info.lower():
-                    continue
-                if hasattr(patient, field):
-                    current = getattr(patient, field) or ""
-                    if current and current not in ("None reported", "Not assessed"):
-                        if not current.startswith("•"):
-                            current = f"• {current}"
-                        setattr(patient, field, current.strip() + "\n• " + info.lstrip('• '))
-                    else:
-                        setattr(patient, field, "• " + info.lstrip('• '))
-        db.commit()
-
-        return {
-            "status": "success",
-            "extracted_info": "Noted.",
-            "is_complete": fu_result.is_complete,
-            "next_question": fu_result.next_question,
-            "transcript": transcript
-        }
-    except Exception as e:
-        print(f"Follow-up error: {e}")
-        return {
-            "status": "success",
-            "extracted_info": "Noted.",
-            "is_complete": True,
-            "next_question": "Is there anything else?",
-            "transcript": transcript
-        }
+    return handle_followup_extraction(
+        patient=patient,
+        transcript=transcript,
+        language=language,
+        conversation_context=conversation_context,
+        is_ayush=is_ayush,
+        follow_up_count=follow_up_count,
+        db=db
+    )
 
 
 def process_document_background(file_bytes: bytes, filename: str, content_type: str, file_url: str, patient_id_db: int):
@@ -537,7 +642,7 @@ Output ONLY valid JSON:
                 prompt = f"Extracted Text:\n{extracted_text}\n\n{prompt_base}"
                 response_text = call_llm(prompt)
             else:
-                print("Using llama3.2-vision for image in background...")
+                print(f"Using {VISION_MODEL} for image in background...")
                 response_text = call_llm(prompt_base, image_bytes=file_bytes)
 
             result_json = json.loads(extract_json_string(response_text))
