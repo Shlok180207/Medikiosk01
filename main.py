@@ -522,6 +522,9 @@ Output ONLY valid JSON:
             if hasattr(patient, field):
                 current = getattr(patient, field) or ""
                 info_clean = info.lstrip('• ').strip()
+                # Skip if this exact info is already present (prevents duplicates)
+                if info_clean and info_clean in current:
+                    continue
                 if current and current not in ("None reported", "Not assessed", "Unknown", ""):
                     setattr(patient, field, current.strip() + "\n• " + info_clean)
                 else:
