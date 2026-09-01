@@ -7,6 +7,8 @@ export default function Dashboard() {
   const [selectedPatientId, setSelectedPatientId] = useState(null);
   const [patientData, setPatientData] = useState(null);
   const [status, setStatus] = useState('Waiting for patient...');
+  const [historyData, setHistoryData] = useState(null);
+  const [showAllHistory, setShowAllHistory] = useState(false);
 
   // Fetch queue
   const fetchQueue = async () => {
@@ -64,8 +66,28 @@ export default function Dashboard() {
   }, []);
 
   useEffect(() => {
-    if (selectedPatientId) fetchData();
+    if (selectedPatientId) {
+      fetchData();
+      fetchHistory();
+      setShowAllHistory(false);
+    }
   }, [selectedPatientId]);
+
+  // Fetch ABHA-linked history
+  const fetchHistory = async () => {
+    if (!selectedPatientId) return;
+    try {
+      const response = await fetch(`${API_BASE_URL}/patient-history?patient_id=${selectedPatientId}`);
+      const data = await response.json();
+      setHistoryData(data);
+      // If still processing, poll again in 3 seconds
+      if (data.filter_status === 'processing') {
+        setTimeout(fetchHistory, 3000);
+      }
+    } catch (error) {
+      console.error('Failed to fetch history', error);
+    }
+  };
 
   const isEmergency = patientData?.is_emergency;
 
@@ -100,10 +122,22 @@ export default function Dashboard() {
                   transition: 'all var(--transition-fast)'
                 }}
               >
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    {p.is_emergency && <span style={{ color: 'var(--color-danger)' }}>🚨</span>}
-                    <span style={{ fontWeight: 600, color: 'var(--color-text)' }}>{p.patient_id}</span>
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <div className="flex items-center gap-1.5 mb-1">
+                      {p.is_emergency && <span style={{ color: 'var(--color-danger)' }}>🚨</span>}
+                      <span style={{ fontWeight: 700, color: 'var(--color-text)', fontSize: '0.95rem' }}>
+                        {p.patient_name || p.patient_id}
+                      </span>
+                    </div>
+                    <div className="caption" style={{ color: 'var(--color-primary)', fontWeight: 600, fontSize: '11px' }}>
+                      {p.abha_id ? `ABHA: ${p.abha_id}` : p.patient_id}
+                    </div>
+                    {(p.age || p.gender) && (
+                      <div className="caption" style={{ fontSize: '11px', color: 'var(--color-text-secondary)' }}>
+                        {p.age ? `${p.age} yrs` : ''} {p.gender ? `• ${p.gender}` : ''}
+                      </div>
+                    )}
                   </div>
                   <button 
                     onClick={(e) => handleDelete(e, p.patient_id)} 
@@ -113,7 +147,7 @@ export default function Dashboard() {
                     🗑️
                   </button>
                 </div>
-                <span className="caption">Arrived: {p.created_at}</span>
+                <span className="caption" style={{ fontSize: '10px', marginTop: '4px', display: 'block' }}>Arrived: {p.created_at}</span>
               </div>
             ))
           )}
@@ -136,9 +170,16 @@ export default function Dashboard() {
             {/* Header */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-6)', flexWrap: 'wrap', gap: 'var(--space-4)' }}>
               <div>
-                <h2 className="heading-2">Clinical Summary</h2>
+                <div className="flex items-center gap-3 mb-1">
+                  <h2 className="heading-2">{patientData.patient_name || 'Clinical Summary'}</h2>
+                  {patientData.abha_id && (
+                    <span className="badge badge-info" style={{ fontSize: '0.8rem', padding: '4px 10px' }}>
+                      ABHA: {patientData.abha_id}
+                    </span>
+                  )}
+                </div>
                 <p className="caption">
-                  AI-Generated Intake Report • {patientData.patient_id} • {status}
+                  {patientData.age ? `Age ${patientData.age}` : ''} {patientData.gender ? `• ${patientData.gender}` : ''} {patientData.phone ? `• Ph: ${patientData.phone}` : ''} • ID: {patientData.patient_id} • {status}
                 </p>
               </div>
               <div className="flex gap-3">
@@ -209,6 +250,65 @@ export default function Dashboard() {
                   <div><span className="caption">Vikriti</span><p className="body-text">{patientData.vikriti}</p></div>
                   <div><span className="caption">Agni</span><p className="body-text">{patientData.agni}</p></div>
                 </div>
+              </div>
+            )}
+
+            {/* ABHA Past Visit History */}
+            {historyData && (historyData.relevant_history?.length > 0 || historyData.other_history?.length > 0) && (
+              <div className="mt-4">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-4)' }}>
+                  <h3 style={{ fontSize: 'var(--font-size-lg)', fontWeight: 700 }}>📜 Past Visit History (ABHA)</h3>
+                  {historyData.abha_id && (
+                    <span style={{ background: 'var(--color-primary-50)', color: 'var(--color-primary)', padding: '4px 12px', borderRadius: '20px', fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>
+                      ABHA: {historyData.abha_id}
+                    </span>
+                  )}
+                </div>
+
+                {historyData.filter_status === 'processing' && (
+                  <div className="alert alert-warning mb-4" style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+                    <div className="spinner" style={{ width: 18, height: 18 }} />
+                    🔄 AI is analyzing past medical history for relevance to today's complaint...
+                  </div>
+                )}
+
+                {/* Relevant History */}
+                {historyData.relevant_history?.length > 0 && (
+                  <div style={{ marginBottom: 'var(--space-4)' }}>
+                    <h4 style={{ fontWeight: 600, marginBottom: 'var(--space-3)', color: 'var(--color-success)', fontSize: 'var(--font-size-base)' }}>
+                      ⚡ Relevant to Today's Visit ({historyData.relevant_history.length})
+                    </h4>
+                    <div className="flex flex-col gap-3">
+                      {historyData.relevant_history.map(visit => (
+                        <VisitCard key={visit.id} visit={visit} isRelevant={true} />
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Other History (collapsible) */}
+                {historyData.other_history?.length > 0 && (
+                  <div>
+                    <button
+                      onClick={() => setShowAllHistory(!showAllHistory)}
+                      style={{
+                        background: 'none', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)',
+                        padding: 'var(--space-2) var(--space-4)', cursor: 'pointer', color: 'var(--color-text-muted)',
+                        fontSize: 'var(--font-size-sm)', width: '100%', marginBottom: 'var(--space-3)',
+                        transition: 'all var(--transition-fast)'
+                      }}
+                    >
+                      {showAllHistory ? '▼ Hide' : '▶ View All'} Other History ({historyData.other_history.length} visits)
+                    </button>
+                    {showAllHistory && (
+                      <div className="flex flex-col gap-3 animate-fade-in">
+                        {historyData.other_history.map(visit => (
+                          <VisitCard key={visit.id} visit={visit} isRelevant={false} />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
@@ -288,4 +388,90 @@ function DocumentsView({ data, patientId }) {
   } catch {
     return <p className="caption">{data}</p>;
   }
+}
+
+function VisitCard({ visit, isRelevant }) {
+  return (
+    <div
+      className="card"
+      style={{
+        padding: 'var(--space-4) var(--space-5)',
+        borderLeft: isRelevant ? '4px solid var(--color-success)' : '4px solid var(--color-border)',
+        background: isRelevant ? 'var(--color-surface)' : 'var(--color-bg)',
+        opacity: isRelevant ? 1 : 0.85,
+        boxShadow: isRelevant ? 'var(--shadow-sm)' : 'none'
+      }}
+    >
+      <div className="flex items-center justify-between gap-2 mb-2">
+        <div className="flex items-center gap-2">
+          <span style={{ fontWeight: 700, fontSize: 'var(--font-size-base)', color: 'var(--color-text)' }}>
+            📅 {visit.visit_date}
+          </span>
+          <span className="badge badge-info" style={{ fontSize: 'var(--font-size-xs)' }}>
+            {visit.specialty || 'General OPD'}
+          </span>
+          {isRelevant && (
+            <span className="badge badge-success" style={{ fontSize: 'var(--font-size-xs)', fontWeight: 600 }}>
+              ⚡ AI Correlated
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div style={{ marginBottom: 'var(--space-2)' }}>
+        <span className="caption" style={{ fontWeight: 600 }}>Complaint: </span>
+        <span className="body-text" style={{ fontWeight: 600 }}>{visit.chief_complaint}</span>
+      </div>
+
+      {visit.relevance_reason && (
+        <div
+          style={{
+            background: isRelevant ? 'rgba(16, 185, 129, 0.08)' : 'var(--color-surface)',
+            border: isRelevant ? '1px solid rgba(16, 185, 129, 0.25)' : '1px solid var(--color-border-light)',
+            borderRadius: 'var(--radius-md)',
+            padding: 'var(--space-2) var(--space-3)',
+            marginBottom: 'var(--space-3)',
+            fontSize: 'var(--font-size-sm)',
+            color: isRelevant ? 'var(--color-success-dark, #065f46)' : 'var(--color-text-muted)'
+          }}
+        >
+          <strong>💡 AI Clinical Relevance:</strong> {visit.relevance_reason}
+        </div>
+      )}
+
+      {visit.summary && (
+        <p className="body-text mb-2" style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)' }}>
+          {visit.summary}
+        </p>
+      )}
+
+      {visit.diagnoses?.length > 0 && (
+        <div className="caption mb-1">
+          <strong>Diagnoses: </strong>
+          {visit.diagnoses.map((diag, idx) => (
+            <span key={idx} style={{ display: 'inline-block', background: 'var(--color-primary-50)', color: 'var(--color-primary)', borderRadius: '4px', padding: '1px 6px', margin: '2px', fontSize: '11px', fontWeight: 600 }}>
+              {diag}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {visit.medications?.length > 0 && (
+        <div className="caption mb-1">
+          <strong>Medications: </strong>
+          {visit.medications.map((med, idx) => (
+            <span key={idx} style={{ display: 'inline-block', background: 'var(--color-bg)', border: '1px solid var(--color-border)', borderRadius: '4px', padding: '1px 6px', margin: '2px', fontSize: '11px' }}>
+              💊 {med}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {visit.flagged_values?.length > 0 && (
+        <div className="caption mt-2" style={{ color: 'var(--color-danger)', fontWeight: 600 }}>
+          ⚠️ Flagged Labs: {visit.flagged_values.join(' • ')}
+        </div>
+      )}
+    </div>
+  );
 }

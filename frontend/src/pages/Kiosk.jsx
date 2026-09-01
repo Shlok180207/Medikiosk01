@@ -6,7 +6,7 @@ const API_BASE_URL = 'http://localhost:8000/api';
 
 export default function Kiosk() {
   const navigate = useNavigate();
-  const { languageLabel, languageCode, speechCode, isAyush, patientId, setPatientId, setClinicalData, t } = useApp();
+  const { languageLabel, languageCode, speechCode, isAyush, patient, patientId, setPatientId, setClinicalData, t } = useApp();
 
   // ── TTS (Text-to-Speech) for accessibility ──
   const audioRef = useRef(null);
@@ -194,7 +194,8 @@ export default function Kiosk() {
     setIsProcessing(true);
     addMessage('Skipping... generating demo patient and lab report...', 'bot');
     try {
-      const response = await fetch(`${API_BASE_URL}/demo-data`, { method: 'POST' });
+      const selectedAbha = patient?.abhaId || '12-3456-7890-1234';
+      const response = await fetch(`${API_BASE_URL}/demo-data?abha_id=${encodeURIComponent(selectedAbha)}`, { method: 'POST' });
       const data = await response.json();
       if (data.patient_id) {
         setPatientId(data.patient_id);
@@ -215,6 +216,12 @@ export default function Kiosk() {
       formData.append('audio', audioBlob, 'recording.webm');
       formData.append('language', languageLabel);
       formData.append('is_ayush', isAyush);
+      if (patient?.abhaId) formData.append('abha_id', patient.abhaId);
+      if (patient?.name) formData.append('patient_name', patient.name);
+      if (patient?.age) formData.append('age', patient.age);
+      if (patient?.gender) formData.append('gender', patient.gender);
+      if (patient?.phone) formData.append('phone', patient.phone);
+
       const response = await fetch(`${API_BASE_URL}/process-audio`, { method: 'POST', body: formData });
       const data = await response.json();
       handleInitialResponse(data);
@@ -232,6 +239,12 @@ export default function Kiosk() {
       formData.append('transcript', transcript);
       formData.append('language', languageLabel);
       formData.append('is_ayush', isAyush);
+      if (patient?.abhaId) formData.append('abha_id', patient.abhaId);
+      if (patient?.name) formData.append('patient_name', patient.name);
+      if (patient?.age) formData.append('age', patient.age);
+      if (patient?.gender) formData.append('gender', patient.gender);
+      if (patient?.phone) formData.append('phone', patient.phone);
+
       const response = await fetch(`${API_BASE_URL}/process-text`, { method: 'POST', body: formData });
       const data = await response.json();
       handleInitialResponse(data);

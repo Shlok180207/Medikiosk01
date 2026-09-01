@@ -8,10 +8,12 @@ export default function Summary() {
   const navigate = useNavigate();
   const { patientId, patient, specialty, selectedProvider, t } = useApp();
   const [summary, setSummary] = useState(null);
+  const [history, setHistory] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     fetchSummary();
+    fetchHistory();
   }, []);
 
   const fetchSummary = async () => {
@@ -23,6 +25,16 @@ export default function Summary() {
       console.error('Failed to fetch summary:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchHistory = async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/patient-history?patient_id=${patientId}`);
+      const data = await response.json();
+      setHistory(data);
+    } catch (error) {
+      console.error('Failed to fetch history:', error);
     }
   };
 
@@ -49,10 +61,16 @@ export default function Summary() {
 
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-6)', flexWrap: 'wrap', gap: 'var(--space-4)' }}>
           <div>
-            <h2 className="heading-2">{t('summary_title')}</h2>
+            <div className="flex items-center gap-3">
+              <h2 className="heading-2">{summary?.patient_name || patient?.name || t('summary_title')}</h2>
+              {(summary?.abha_id || patient?.abhaId) && (
+                <span className="badge badge-info" style={{ fontSize: '0.8rem', padding: '4px 10px' }}>
+                  ABHA: {summary?.abha_id || patient?.abhaId}
+                </span>
+              )}
+            </div>
             <p className="caption mt-2">
-              {patient?.name || 'Patient'} • {patient?.age ? `Age ${patient.age}` : ''} •
-              {patientId} • {specialty?.specialty || 'General Medicine'}
+              {summary?.age || patient?.age ? `Age ${summary?.age || patient?.age}` : ''} • {summary?.gender || patient?.gender ? `${summary?.gender || patient?.gender}` : ''} • {patientId} • {specialty?.specialty || 'General Medicine'}
             </p>
           </div>
         </div>
@@ -126,6 +144,33 @@ export default function Summary() {
                 <div className="caption" style={{ fontWeight: 600 }}>Agni</div>
                 <p className="body-text">{summary?.agni}</p>
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* ABHA Linked Past Records */}
+        {history?.relevant_history?.length > 0 && (
+          <div className="card mt-4" style={{ padding: 'var(--space-5)', borderLeft: '4px solid var(--color-primary)' }}>
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="heading-4">📜 Linked Health Records (ABHA)</h4>
+              <span className="badge badge-success" style={{ fontSize: 'var(--font-size-xs)' }}>
+                {history.relevant_history.length} relevant record(s) attached
+              </span>
+            </div>
+            <div className="flex flex-col gap-2">
+              {history.relevant_history.slice(0, 2).map((v, i) => (
+                <div key={i} style={{ padding: 'var(--space-3)', background: 'var(--color-bg)', borderRadius: 'var(--radius-md)' }}>
+                  <div className="flex items-center justify-between">
+                    <span style={{ fontWeight: 600, fontSize: 'var(--font-size-sm)' }}>📅 {v.visit_date} • {v.chief_complaint}</span>
+                    <span className="caption">{v.specialty}</span>
+                  </div>
+                  {v.relevance_reason && (
+                    <p className="caption mt-1" style={{ color: 'var(--color-primary)' }}>
+                      💡 {v.relevance_reason}
+                    </p>
+                  )}
+                </div>
+              ))}
             </div>
           </div>
         )}

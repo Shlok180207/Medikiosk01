@@ -1,0 +1,167 @@
+================================================================================
+                    MEDIKIOSK - DUMMY ABHA PATIENT PROFILES
+                (Smart India Hackathon 2026 - Edge AI Kiosk)
+================================================================================
+
+This document contains 5 pre-configured ABHA patient profiles designed for live
+demonstrations of MediKiosk's "Context-Aware ABHA History & Edge AI Triage".
+
+--------------------------------------------------------------------------------
+PATIENT 1: RAMESH SHARMA (Cardiology & Metabolic)
+--------------------------------------------------------------------------------
+• ABHA ID:        12-3456-7890-1234
+• Age / Gender:   58 Years | Male
+• Phone:          +91 98765 43210
+• Chronic Issues: Type 2 Diabetes, Hypertension Stage 2, Post-MI Status
+• Past History Records in ABHA:
+  [1] 2024-01-15 (Cardiology):
+      - Complaint:  Acute retrosternal chest pain radiating to left arm
+      - Diagnoses:  Myocardial Infarction (STEMI), CAD - Single Vessel Disease
+      - Medications:Aspirin 75mg OD, Clopidogrel 75mg OD, Atorvastatin 40mg OD, Metoprolol 25mg BD
+      - Lab Tests:  Troponin I: 8.5 ng/mL (Critical High), CK-MB: 45 U/L (High)
+      - Summary:    Admitted for primary PCI with drug-eluting stent to LAD.
+  [2] 2024-06-20 (Cardiology):
+      - Complaint:  Routine 6-month post-stent cardiac evaluation
+      - Diagnoses:  Hyperlipidemia, Stable Post-PCI CAD
+      - Medications:Atorvastatin 40mg OD, Ramipril 5mg OD, Aspirin 75mg OD
+      - Lab Tests:  LDL Cholesterol: 145 mg/dL (High), Total Cholesterol: 230 mg/dL
+  [3] 2023-04-12 (Orthopedics - UNRELATED):
+      - Complaint:  Left ankle sprain after walking on uneven ground
+      - Diagnoses:  Grade 1 Ankle Ligament Sprain
+      - Medications:Paracetamol 650mg SOS, Crepe bandage
+  [4] 2025-02-10 (General Medicine):
+      - Complaint:  Fatigue and polyuria
+      - Diagnoses:  Type 2 Diabetes Mellitus (Uncontrolled)
+      - Medications:Metformin 500mg BD, Glimepiride 1mg OD
+      - Lab Tests:  HbA1c: 8.2% (High), Fasting Glucose: 168 mg/dL
+
+🎯 DEMO TEST PROMPT FOR RAMESH:
+• Relevant Test:   "सीने में तेज दर्द हो रहा है और बहुत पसीना आ रहा है" (Severe chest pain and sweating)
+  -> AI Result:    Pins STEMI (2024) and Statin records as "⚡ Relevant to Today's Visit", highlights active blood thinners.
+• Irrelevant Test: "पैर की उंगली में मोच आ गई है" (Sprained toe)
+  -> AI Result:    Pins 2023 ankle sprain, moves cardiac records to "Other History".
+
+
+--------------------------------------------------------------------------------
+PATIENT 2: PRIYA PATEL (Pulmonology & Respiratory)
+--------------------------------------------------------------------------------
+• ABHA ID:        23-4567-8901-2345
+• Age / Gender:   32 Years | Female
+• Phone:          +91 98123 45678
+• Chronic Issues: Chronic Bronchial Asthma, Allergic Rhinosinusitis
+• Past History Records in ABHA:
+  [1] 2024-10-05 (Pulmonology):
+      - Complaint:  Severe acute wheezing, breathlessness during winter onset
+      - Diagnoses:  Acute Exacerbation of Bronchial Asthma
+      - Medications:Salbutamol + Ipratropium Nebulization, Budecort Inhaler 200mcg BD, Montelukast 10mg OD
+      - Lab Tests:  Serum IgE: 650 IU/mL (Markedly Elevated), Peak Flow: 220 L/min (Low)
+      - Summary:    Treated for acute bronchospasm. Advised strict inhaler compliance.
+  [2] 2023-02-18 (Dermatology - UNRELATED):
+      - Complaint:  Acne vulgaris breakouts on forehead and cheeks
+      - Diagnoses:  Moderate Papulopustular Acne
+      - Medications:Clindamycin Gel topical, Benzoyl Peroxide 2.5%
+  [3] 2024-03-14 (Pulmonology):
+      - Complaint:  Nighttime persistent dry cough
+      - Diagnoses:  Cough-Variant Asthma
+      - Medications:Levocetirizine 5mg OD, Formoterol + Budesonide Inhaler
+
+🎯 DEMO TEST PROMPT FOR PRIYA:
+• Relevant Test:   "सांस लेने में बहुत दिक्कत हो रही है और छाती से सीटी जैसी आवाज आ रही है" (Shortness of breath with wheezing)
+  -> AI Result:    Pins Bronchial Asthma (2024) and Inhaler prescriptions with High IgE flags as "⚡ Relevant".
+• Irrelevant Test: "पेट में जलन और खट्टी डकार आ रही है" (Acidity and heartburn)
+  -> AI Result:    Categorizes Asthma records under "Other History".
+
+
+--------------------------------------------------------------------------------
+PATIENT 3: SUNITA DEVI (Orthopedics & Rheumatology)
+--------------------------------------------------------------------------------
+• ABHA ID:        34-5678-9012-3456
+• Age / Gender:   64 Years | Female
+• Phone:          +91 97654 32109
+• Chronic Issues: Bilateral Knee Osteoarthritis (Grade 3), Osteopenia
+• Past History Records in ABHA:
+  [1] 2024-08-11 (Orthopedics):
+      - Complaint:  Inability to climb stairs, severe right knee crepitus and swelling
+      - Diagnoses:  Primary Osteoarthritis of Right Knee (Kellgren-Lawrence Grade 3)
+      - Medications:Aceclofenac 100mg + Paracetamol 325mg BD, Glucosamine 1500mg OD
+      - Lab / Imaging: Right Knee X-Ray shows severe medial joint space narrowing and osteophytes.
+  [2] 2023-11-20 (Rheumatology):
+      - Complaint:  Generalized bone aches, lower back stiffness
+      - Diagnoses:  Osteopenia, Severe Vitamin D3 Deficiency
+      - Medications:Cholecalciferol (Vit D3) 60,000 IU weekly x 8 weeks, Calcium Carbonate 500mg BD
+      - Lab Tests:  Serum Vitamin D: 9.8 ng/mL (Severe Deficiency), DEXA T-Score: -2.1
+  [3] 2022-05-04 (Ophthalmology - UNRELATED):
+      - Complaint:  Blurred distance vision, difficulty reading small print
+      - Diagnoses:  Early Senile Immature Cataract (Left Eye), Presbyopia
+      - Medications:Carboxymethylcellulose 0.5% eye drops
+
+🎯 DEMO TEST PROMPT FOR SUNITA:
+• Relevant Test:   "दाहिने घुटने में बहुत तेज दर्द और सूजन है, चला नहीं जा रहा" (Severe right knee pain and swelling)
+  -> AI Result:    Pins Grade 3 Knee Osteoarthritis X-Ray & Bone density records as "⚡ Relevant".
+
+
+--------------------------------------------------------------------------------
+PATIENT 4: MOHAMMED ALI (Gastroenterology & Hepatic)
+--------------------------------------------------------------------------------
+• ABHA ID:        45-6789-0123-4567
+• Age / Gender:   45 Years | Male
+• Phone:          +91 96543 21098
+• Chronic Issues: Chronic GERD, Peptic Ulcer Disease, Non-Alcoholic Fatty Liver (Grade 1)
+• Past History Records in ABHA:
+  [1] 2024-04-22 (Gastroenterology):
+      - Complaint:  Burning epigastric pain post meals, recurrent acid regurgitation
+      - Diagnoses:  Erosive Reflux Esophagitis (Grade B), Antral Gastritis
+      - Medications:Pantoprazole 40mg OD (before breakfast), Sucralfate suspension 10ml TDS
+      - Imaging:    Upper GI Endoscopy shows multiple superficial mucosal breaks in lower esophagus.
+  [2] 2024-11-19 (Gastroenterology):
+      - Complaint:  Fatigue, dull ache in right upper quadrant of abdomen
+      - Diagnoses:  Hepatic Steatosis (Grade 1 Fatty Liver)
+      - Medications:Ursodeoxycholic Acid (UDCA) 300mg BD, Vitamin E 400mg OD
+      - Lab Tests:  SGPT/ALT: 68 U/L (High), SGOT/AST: 54 U/L (High), Serum Bilirubin: 1.1 mg/dL
+  [3] 2023-07-08 (ENT - UNRELATED):
+      - Complaint:  Right ear pain after swimming
+      - Diagnoses:  Otitis Externa (Swimmer's Ear)
+      - Medications:Ciprofloxacin ear drops, Ibuprofen 400mg
+
+🎯 DEMO TEST PROMPT FOR MOHAMMED:
+• Relevant Test:   "पेट के ऊपरी हिस्से में बहुत तेज जलन और उल्टियां हो रही हैं" (Severe upper abdominal burning and vomiting)
+  -> AI Result:    Pins Reflux Esophagitis Endoscopy and Liver Enzyme records as "⚡ Relevant".
+
+
+--------------------------------------------------------------------------------
+PATIENT 5: ANITA VERMA (ENT & Allergy)
+--------------------------------------------------------------------------------
+• ABHA ID:        56-7890-1234-5678
+• Age / Gender:   26 Years | Female
+• Phone:          +91 95432 10987
+• Chronic Issues: Chronic Maxillary Sinusitis, Allergic Rhinitis
+• Past History Records in ABHA:
+  [1] 2024-12-01 (ENT):
+      - Complaint:  Severe bilateral throbbing facial pressure, thick nasal discharge, headache
+      - Diagnoses:  Acute Exacerbation of Chronic Maxillary Sinusitis
+      - Medications:Amoxicillin-Clavulanate 625mg BD x 7d, Fluticasone Furoate Nasal Spray 1 puff BD, Saline Nasal Rinse
+      - Imaging:    PNS X-Ray / CT shows bilateral maxillary sinus mucosal thickening and fluid levels.
+  [2] 2023-09-15 (Allergy / Immunology):
+      - Complaint:  Continuous morning sneezing bouts (15-20 sneezes), watery itchy eyes
+      - Diagnoses:  Perennial Allergic Rhinitis (Dust Mite & Pollen sensitivity)
+      - Medications:Bilastine 20mg OD, Montelukast 10mg OD
+      - Lab Tests:  Skin Prick Test positive for Dermatophagoides pteronyssinus (House Dust Mite).
+  [3] 2022-01-10 (Orthopedics - UNRELATED):
+      - Complaint:  Right wrist pain after typing on laptop
+      - Diagnoses:  De Quervain's Tenosynovitis (Wrist strain)
+      - Medications:Wrist splint, Diclofenac gel
+
+🎯 DEMO TEST PROMPT FOR ANITA:
+• Relevant Test:   "नाक पूरी तरह बंद है, माथे और गालों में भारी दर्द और भारीपन है" (Nasal blockage with severe facial pressure)
+  -> AI Result:    Pins Sinusitis PNS imaging and Allergic Rhinitis records as "⚡ Relevant".
+
+================================================================================
+                    HOW TO USE THESE PROFILES IN LIVE DEMOS
+================================================================================
+1. Launch MediKiosk frontend (`npm run dev`) and backend (`python main.py`).
+2. On the Kiosk login screen ("Identify Patient"), click ANY of the 5 profile cards.
+3. The Kiosk instantly loads their verified ABHA Identity (Name, Age, Gender, ABHA ID).
+4. Speak or type their corresponding complaint.
+5. Open the Doctor Dashboard (`/doctor`) to see their real Name & ABHA badge in the queue,
+   and observe Edge AI dynamically pinning ONLY their relevant medical records!
+================================================================================

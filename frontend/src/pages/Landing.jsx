@@ -1,8 +1,9 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 export default function Landing() {
   const navigate = useNavigate();
+  const [showHowItWorks, setShowHowItWorks] = useState(false);
 
   return (
     <div className="page-container" style={{ background: 'linear-gradient(180deg, #ecfeff 0%, #f8fafc 50%)' }}>
@@ -62,7 +63,7 @@ export default function Landing() {
         </button>
 
         <div style={{ marginTop: 'var(--space-6)' }}>
-          <button className="btn btn-ghost btn-sm" onClick={() => {/* TODO: modal */}}>
+          <button className="btn btn-ghost btn-sm" onClick={() => setShowHowItWorks(true)}>
             ❓ How it works
           </button>
         </div>
@@ -78,6 +79,88 @@ export default function Landing() {
             and the records before the consultation — so the doctor can focus on clinical decision-making."
           </p>
         </div>
+
+        {/* How It Works Modal */}
+        {showHowItWorks && (
+          <div style={{
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            background: 'rgba(15, 23, 42, 0.6)', backdropFilter: 'blur(4px)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            zIndex: 1000, padding: 'var(--space-4)'
+          }}>
+            <div className="card animate-slide-up" style={{
+              maxWidth: 580, width: '100%', maxHeight: '90vh', overflowY: 'auto',
+              padding: 'var(--space-8)', textAlign: 'left', position: 'relative'
+            }}>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="heading-3">How MediKiosk Works</h3>
+                <button
+                  onClick={() => setShowHowItWorks(false)}
+                  style={{
+                    background: 'none', border: 'none', fontSize: '1.5rem',
+                    cursor: 'pointer', color: 'var(--color-text-muted)', lineHeight: 1
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div className="flex flex-col gap-4 mb-6">
+                <div style={{ display: 'flex', gap: 'var(--space-4)', alignItems: 'flex-start' }}>
+                  <div style={{
+                    width: 36, height: 36, borderRadius: '50%', background: 'var(--color-primary-50)',
+                    color: 'var(--color-primary)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontWeight: 700, flexShrink: 0
+                  }}>1</div>
+                  <div>
+                    <strong style={{ display: 'block', marginBottom: '2px' }}>Choose Language & Identify (ABHA)</strong>
+                    <span className="caption">Select from 10 Indian languages and verify your Ayushman Bharat Health Account (ABHA).</span>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: 'var(--space-4)', alignItems: 'flex-start' }}>
+                  <div style={{
+                    width: 36, height: 36, borderRadius: '50%', background: 'var(--color-primary-50)',
+                    color: 'var(--color-primary)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontWeight: 700, flexShrink: 0
+                  }}>2</div>
+                  <div>
+                    <strong style={{ display: 'block', marginBottom: '2px' }}>Voice-Driven Intake Consultation</strong>
+                    <span className="caption">Speak naturally in your native language. Edge AI asks targeted follow-ups to gather HPI, PMH, allergies, and red flags.</span>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: 'var(--space-4)', alignItems: 'flex-start' }}>
+                  <div style={{
+                    width: 36, height: 36, borderRadius: '50%', background: 'var(--color-primary-50)',
+                    color: 'var(--color-primary)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontWeight: 700, flexShrink: 0
+                  }}>3</div>
+                  <div>
+                    <strong style={{ display: 'block', marginBottom: '2px' }}>Smart OCR & Past Record Correlation</strong>
+                    <span className="caption">Upload prescriptions or lab reports. AI automatically highlights past conditions relevant to today's complaint.</span>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: 'var(--space-4)', alignItems: 'flex-start' }}>
+                  <div style={{
+                    width: 36, height: 36, borderRadius: '50%', background: 'var(--color-primary-50)',
+                    color: 'var(--color-primary)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontWeight: 700, flexShrink: 0
+                  }}>4</div>
+                  <div>
+                    <strong style={{ display: 'block', marginBottom: '2px' }}>Doctor Dashboard & OPD Handover</strong>
+                    <span className="caption">The doctor receives a structured clinical summary with highlighted key findings before you even step in!</span>
+                  </div>
+                </div>
+              </div>
+
+              <button className="btn btn-primary btn-full" onClick={() => setShowHowItWorks(false)}>
+                Got it!
+              </button>
+            </div>
+          </div>
+        )}
 
       </div>
     </div>

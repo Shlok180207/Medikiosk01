@@ -6,10 +6,20 @@ const API_BASE_URL = 'http://localhost:8000/api';
 
 export default function DocumentScan() {
   const navigate = useNavigate();
-  const { patientId, documents, setDocuments, languageLabel, t } = useApp();
+  const { patientId, documents, setDocuments, languageLabel, isAyush, t } = useApp();
   const [isProcessing, setIsProcessing] = useState(false);
   const [extractedDoc, setExtractedDoc] = useState(null);
   const fileInputRef = useRef(null);
+
+  const triggerFinalizeIntake = () => {
+    if (patientId) {
+      const formData = new FormData();
+      formData.append('patient_id', patientId);
+      formData.append('language', languageLabel || 'English');
+      formData.append('is_ayush', Boolean(isAyush));
+      fetch(`${API_BASE_URL}/finalize-intake`, { method: 'POST', body: formData }).catch(err => console.log('Finalize intake note:', err));
+    }
+  };
 
   const handleFileUpload = async (e) => {
     if (e.target.files.length === 0) return;
@@ -39,6 +49,7 @@ export default function DocumentScan() {
   };
 
   const handleSkip = () => {
+    triggerFinalizeIntake();
     navigate('/red-flag');
   };
 
@@ -47,6 +58,7 @@ export default function DocumentScan() {
   };
 
   const handleDone = () => {
+    triggerFinalizeIntake();
     navigate('/red-flag');
   };
 

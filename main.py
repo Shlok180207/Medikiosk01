@@ -13,10 +13,17 @@ from typing import List, Optional
 import os, uuid, json, re, io, tempfile, base64, hashlib
 from gtts import gTTS
 from datetime import datetime
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text, text
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.ext.declarative import declarative_base
 from dotenv import load_dotenv
+import sys
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 load_dotenv()
 
@@ -25,18 +32,16 @@ import ollama
 import torch
 from transformers import pipeline
 
-OLLAMA_MODEL = "qwen2.5:7b"  # Switched to qwen2.5:7b for faster performance and great native Hindi.
+OLLAMA_MODEL = "qwen2.5:7b"
+FALLBACK_MODEL = "qwen2.5:7b"
 VISION_MODEL = "moondream"
 
-# Load Whisper
-device_id = 0 if torch.cuda.is_available() else -1
-print(f"Loading Whisper on {'CUDA' if device_id == 0 else 'CPU'}...")
+# Load Whisper on CUDA GPU (int8_float16) for blazing-fast 0.5s speech transcription
+print("Loading Faster-Whisper on CUDA GPU (int8_float16)...")
 try:
     from faster_whisper import WhisperModel
-    device_type = "cuda" if torch.cuda.is_available() else "cpu"
-    compute_type = "int8_float16" if device_type == "cuda" else "int8"
-    whisper_pipeline = WhisperModel("large-v3", device=device_type, compute_type=compute_type)
-    print("✅ Whisper loaded.")
+    whisper_pipeline = WhisperModel("large-v3", device="cuda", compute_type="int8_float16")
+    print("✅ Whisper loaded on CUDA GPU (transcription latency: ~0.5s).")
 except Exception as e:
     print(f"❌ Whisper failed: {e}")
     whisper_pipeline = None
@@ -44,7 +49,7 @@ except Exception as e:
 
 # ── LLM Helpers ──
 def call_llm(prompt: str, image_bytes: Optional[bytes] = None) -> str:
-    """Call Ollama. If image_bytes provided, uses llama3.2-vision."""
+    """Call Ollama. If image_bytes provided, uses moondream."""
     messages = [{'role': 'user', 'content': prompt}]
     model = OLLAMA_MODEL
 
@@ -52,10 +57,29 @@ def call_llm(prompt: str, image_bytes: Optional[bytes] = None) -> str:
         b64 = base64.b64encode(image_bytes).decode('utf-8')
         messages[0]['images'] = [b64]
         model = VISION_MODEL
+        print(f"→ Ollama Vision ({model})...")
+        response = ollama.chat(model=model, messages=messages, format='json', options={
+            'num_ctx': 2048,
+            'temperature': 0.1
+        })
+        return response['message']['content']
 
     print(f"→ Ollama ({model})...")
-    response = ollama.chat(model=model, messages=messages, format='json')
-    return response['message']['content']
+    try:
+        response = ollama.chat(model=model, messages=messages, format='json', options={
+            'num_ctx': 4096,       # 4k context takes only 250MB KV cache (prevents VRAM overflow)
+            'temperature': 0.1     
+        })
+        return response['message']['content']
+    except Exception as e:
+        if model != FALLBACK_MODEL:
+            print(f"⚠️ {model} not ready or failed ({e}), falling back to {FALLBACK_MODEL}...")
+            response = ollama.chat(model=FALLBACK_MODEL, messages=messages, format='json', options={
+                'num_ctx': 32768,
+                'temperature': 0.1
+            })
+            return response['message']['content']
+        raise e
 
 
 def extract_json_string(text: str) -> str:
@@ -146,20 +170,20 @@ def get_phase_question(language: str, phase) -> str:
 
 # ── Pydantic Models ──
 PATIENT_JSON_TEMPLATE = """{
-  "chief_complaint": "Main symptom (in English only)",
-  "hpi": "History of present illness (in English only)",
+  "chief_complaint": "Main presenting symptom (translated to clinical English)",
+  "hpi": "Comprehensive narrative of present illness, onset, radiation, severity, associated symptoms, and relieving factors (in English)",
   "is_emergency": false,
   "severity": "Low|Medium|High",
-  "duration": "Duration of symptoms (in English)",
-  "past_medical_history": "Any past conditions or 'None reported' (in English)",
-  "family_history": "Family medical history or 'None reported' (in English)",
-  "personal_history": "Smoking, alcohol, diet, lifestyle or 'None reported' (in English)",
-  "allergies": "Known allergies or 'None reported' (in English)",
-  "review_of_systems": "Other symptoms or 'None reported' (in English)",
+  "duration": "Symptom duration (e.g. '2 days')",
+  "past_medical_history": "Past conditions (or 'Uncertain / unconfirmed (patient does not recall)' if unsure, or 'Patient denies past chronic medical illness' if denied)",
+  "family_history": "Family history (or 'Patient denies family history of similar illness' if denied, or 'Uncertain' if unsure)",
+  "personal_history": "Smoking, alcohol, diet, habits (or 'No significant lifestyle risks reported')",
+  "allergies": "Drug/food allergies (or 'No known drug allergies (NKDA)' if denied)",
+  "review_of_systems": "Summary of systemic positive and negative findings (e.g. 'Patient reports diaphoresis and anxiety; denies fever, vomiting, or dyspnea')",
   "prakriti": "Not assessed",
   "vikriti": "Not assessed",
   "agni": "Not assessed",
-  "next_question": "Generated first question in patient's language"
+  "next_question": "complete"
 }"""
 
 FOLLOWUP_JSON_TEMPLATE = """{
@@ -227,6 +251,12 @@ class PatientRecord(Base):
     __tablename__ = "patients"
     id = Column(Integer, primary_key=True, index=True)
     patient_id = Column(String, index=True)
+    abha_id = Column(String, index=True, nullable=True)  # Links visits by ABHA identity
+    is_ayush = Column(Boolean, default=False)
+    patient_name = Column(String, default="Patient")
+    age = Column(String, default="")
+    gender = Column(String, default="")
+    phone = Column(String, default="")
     chief_complaint = Column(Text)
     hpi = Column(Text)
     is_emergency = Column(Boolean, default=False)
@@ -241,9 +271,40 @@ class PatientRecord(Base):
     vikriti = Column(String)
     agni = Column(String)
     flagged_lab_values = Column(Text, default="[]")
+    raw_dialogue = Column(Text, default="")
+    is_synthesized = Column(Boolean, default=False)
+    abha_relevance_json = Column(Text, default="{}")
     created_at = Column(String)
 
+
+class VisitHistory(Base):
+    """Stores past visit records linked by ABHA ID for history continuity."""
+    __tablename__ = "visit_history"
+    id = Column(Integer, primary_key=True, index=True)
+    abha_id = Column(String, index=True)
+    visit_date = Column(String)
+    chief_complaint = Column(Text)
+    diagnoses = Column(Text, default="[]")        # JSON list
+    medications = Column(Text, default="[]")       # JSON list
+    flagged_values = Column(Text, default="[]")    # JSON list
+    summary = Column(Text)
+    specialty = Column(String)
+    is_relevant = Column(Boolean, default=False)   # Set by AI filter
+    relevance_reason = Column(Text)                # Why AI thinks it's relevant
+
+
 Base.metadata.create_all(bind=engine)
+
+# Auto-migrate SQLite schema if columns don't exist
+try:
+    with engine.connect() as conn:
+        cols = [row[1] for row in conn.execute(text("PRAGMA table_info(patients)")).fetchall()]
+        for col_name, col_type in [("abha_id", "VARCHAR"), ("patient_name", "VARCHAR"), ("age", "VARCHAR"), ("gender", "VARCHAR"), ("phone", "VARCHAR"), ("raw_dialogue", "TEXT"), ("is_synthesized", "BOOLEAN"), ("abha_relevance_json", "TEXT")]:
+            if col_name not in cols:
+                conn.execute(text(f"ALTER TABLE patients ADD COLUMN {col_name} {col_type}"))
+        conn.commit()
+except Exception as e:
+    print(f"Auto-migration note: {e}")
 
 def get_db():
     db = SessionLocal()
@@ -303,59 +364,511 @@ async def get_tts(text: str, lang: str = "hi"):
 
 
 
-# ── Core: Build patient from transcript ──
-def build_patient_from_transcript(transcript, language, is_ayush, pt_id, db):
-    ayush_inst = (
-        "The setting is Ayurvedic OPD. Assess Prakriti, Vikriti, Agni if evident."
-        if is_ayush else
-        "The setting is standard Allopathic. Set prakriti, vikriti, agni to 'Not assessed'."
-    )
+# ── 5 Diverse ABHA Patient Profiles (Mock ABDM Gateway) ──
+ABHA_PROFILES = {
+    "12-3456-7890-1234": {
+        "name": "Ramesh Sharma",
+        "age": 58,
+        "gender": "Male",
+        "phone": "9876543210",
+        "abha_id": "12-3456-7890-1234",
+        "avatar": "👨‍🦳",
+        "badge": "Cardiology & Diabetes",
+        "history": [
+            {
+                "visit_date": "2024-01-15",
+                "chief_complaint": "Acute chest pain radiating to left arm with cold sweat",
+                "diagnoses": json.dumps(["Myocardial Infarction (STEMI)", "Coronary Artery Disease"]),
+                "medications": json.dumps(["Aspirin 75mg OD", "Clopidogrel 75mg OD", "Atorvastatin 40mg OD", "Metoprolol 25mg BD"]),
+                "flagged_values": json.dumps(["Troponin I: 8.5 ng/mL (Critical High)", "CK-MB: 45 U/L (High)"]),
+                "summary": "Admitted with acute STEMI. Underwent primary PCI with drug-eluting stent to LAD. Discharged on dual antiplatelet therapy.",
+                "specialty": "Cardiology"
+            },
+            {
+                "visit_date": "2024-06-20",
+                "chief_complaint": "Follow-up cardiac & lipid evaluation",
+                "diagnoses": json.dumps(["Hyperlipidemia", "Post-MI follow-up"]),
+                "medications": json.dumps(["Atorvastatin 40mg OD", "Ramipril 5mg OD", "Aspirin 75mg OD"]),
+                "flagged_values": json.dumps(["LDL Cholesterol: 145 mg/dL (High)", "Total Cholesterol: 230 mg/dL (High)"]),
+                "summary": "6-month post-MI follow-up. Echocardiogram shows EF 50%. High LDL, statin dose maintained.",
+                "specialty": "Cardiology"
+            },
+            {
+                "visit_date": "2023-04-12",
+                "chief_complaint": "Left ankle sprain after minor trip",
+                "diagnoses": json.dumps(["Grade 1 Ankle Sprain"]),
+                "medications": json.dumps(["Paracetamol 650mg SOS", "Diclofenac gel"]),
+                "flagged_values": json.dumps([]),
+                "summary": "Minor ligament strain. Fully resolved in 2 weeks.",
+                "specialty": "Orthopedics"
+            },
+            {
+                "visit_date": "2025-02-10",
+                "chief_complaint": "Fatigue, increased thirst, and frequent urination",
+                "diagnoses": json.dumps(["Type 2 Diabetes Mellitus (Uncontrolled)", "Hypertension Stage 2"]),
+                "medications": json.dumps(["Metformin 500mg BD", "Glimepiride 1mg OD", "Telmisartan 40mg OD"]),
+                "flagged_values": json.dumps(["HbA1c: 8.2% (High)", "Fasting Blood Glucose: 168 mg/dL (High)", "BP: 152/94 mmHg"]),
+                "summary": "Uncontrolled Type 2 Diabetes with Stage 2 HTN. Oral hypoglycemics adjusted.",
+                "specialty": "General Medicine"
+            }
+        ]
+    },
+    "23-4567-8901-2345": {
+        "name": "Priya Patel",
+        "age": 32,
+        "gender": "Female",
+        "phone": "9812345678",
+        "abha_id": "23-4567-8901-2345",
+        "avatar": "👩",
+        "badge": "Pulmonology & Asthma",
+        "history": [
+            {
+                "visit_date": "2024-10-05",
+                "chief_complaint": "Severe acute breathlessness, dry cough, and wheezing",
+                "diagnoses": json.dumps(["Acute Exacerbation of Bronchial Asthma", "Bronchospasm"]),
+                "medications": json.dumps(["Salbutamol Nebulization SOS", "Budecort Inhaler 200mcg BD", "Montelukast 10mg OD"]),
+                "flagged_values": json.dumps(["Serum IgE: 650 IU/mL (Markedly Elevated)", "Peak Expiratory Flow: 220 L/min (Low)"]),
+                "summary": "Severe asthma attack triggered by dust and cold weather. Responsive to bronchodilators.",
+                "specialty": "Pulmonology"
+            },
+            {
+                "visit_date": "2023-02-18",
+                "chief_complaint": "Facial skin acne breakouts",
+                "diagnoses": json.dumps(["Acne Vulgaris"]),
+                "medications": json.dumps(["Clindamycin 1% gel", "Benzoyl Peroxide 2.5%"]),
+                "flagged_values": json.dumps([]),
+                "summary": "Mild papular acne treated with topical antibiotics.",
+                "specialty": "Dermatology"
+            },
+            {
+                "visit_date": "2024-03-14",
+                "chief_complaint": "Persistent nighttime coughing fits",
+                "diagnoses": json.dumps(["Cough-Variant Asthma", "Allergic Bronchitis"]),
+                "medications": json.dumps(["Levocetirizine 5mg OD", "Formoterol + Budesonide Inhaler"]),
+                "flagged_values": json.dumps([]),
+                "summary": "Nocturnal asthma symptoms controlled with combination inhaler therapy.",
+                "specialty": "Pulmonology"
+            }
+        ]
+    },
+    "34-5678-9012-3456": {
+        "name": "Sunita Devi",
+        "age": 64,
+        "gender": "Female",
+        "phone": "9765432109",
+        "abha_id": "34-5678-9012-3456",
+        "avatar": "👵",
+        "badge": "Orthopedics & Arthritis",
+        "history": [
+            {
+                "visit_date": "2024-08-11",
+                "chief_complaint": "Severe right knee joint pain, crepitus, and inability to climb stairs",
+                "diagnoses": json.dumps(["Primary Osteoarthritis of Right Knee (Grade 3)", "Synovial Effusion"]),
+                "medications": json.dumps(["Aceclofenac 100mg + Paracetamol 325mg BD", "Glucosamine 1500mg OD"]),
+                "flagged_values": json.dumps(["Knee X-Ray: Medial compartment joint space narrowing with subchondral sclerosis"]),
+                "summary": "Advanced knee osteoarthritis. Advised physiotherapy, quadriceps strengthening, and knee brace.",
+                "specialty": "Orthopedics"
+            },
+            {
+                "visit_date": "2023-11-20",
+                "chief_complaint": "Diffuse lower back pain and bone aches",
+                "diagnoses": json.dumps(["Osteopenia", "Severe Vitamin D3 Deficiency"]),
+                "medications": json.dumps(["Cholecalciferol (Vit D3) 60,000 IU weekly", "Calcium Carbonate 500mg BD"]),
+                "flagged_values": json.dumps(["Serum Vitamin D: 9.8 ng/mL (Deficient)", "DEXA T-Score: -2.1 (Osteopenia)"]),
+                "summary": "Osteopenia identified on DEXA scan. Intensive Vitamin D and Calcium supplementation started.",
+                "specialty": "Rheumatology"
+            },
+            {
+                "visit_date": "2022-05-04",
+                "chief_complaint": "Difficulty reading small text and driving at night",
+                "diagnoses": json.dumps(["Early Immature Senile Cataract", "Presbyopia"]),
+                "medications": json.dumps(["Carboxymethylcellulose eye drops"]),
+                "flagged_values": json.dumps([]),
+                "summary": "Prescription glasses updated. Annual eye review advised.",
+                "specialty": "Ophthalmology"
+            }
+        ]
+    },
+    "45-6789-0123-4567": {
+        "name": "Mohammed Ali",
+        "age": 45,
+        "gender": "Male",
+        "phone": "9654321098",
+        "abha_id": "45-6789-0123-4567",
+        "avatar": "👨",
+        "badge": "Gastroenterology & Liver",
+        "history": [
+            {
+                "visit_date": "2024-04-22",
+                "chief_complaint": "Burning epigastric pain, acid regurgitation, and post-meal fullness",
+                "diagnoses": json.dumps(["Erosive Reflux Esophagitis (Grade B)", "Antral Gastritis"]),
+                "medications": json.dumps(["Pantoprazole 40mg OD", "Sucralfate suspension 10ml TDS"]),
+                "flagged_values": json.dumps(["Endoscopy: Multiple superficial linear mucosal erosions in lower third of esophagus"]),
+                "summary": "Endoscopy confirmed erosive GERD. 8-week course of PPI and mucosal protectant prescribed.",
+                "specialty": "Gastroenterology"
+            },
+            {
+                "visit_date": "2024-11-19",
+                "chief_complaint": "Dull ache in right upper quadrant of abdomen and mild nausea",
+                "diagnoses": json.dumps(["Non-Alcoholic Fatty Liver Disease (Grade 1 NAFLD)", "Elevated Liver Enzymes"]),
+                "medications": json.dumps(["Ursodeoxycholic Acid (UDCA) 300mg BD", "Vitamin E 400mg OD"]),
+                "flagged_values": json.dumps(["SGPT/ALT: 68 U/L (High)", "SGOT/AST: 54 U/L (High)", "Serum Bilirubin: 1.1 mg/dL"]),
+                "summary": "Abdominal ultrasound showed Grade 1 hepatic steatosis with elevated transaminases.",
+                "specialty": "Gastroenterology"
+            },
+            {
+                "visit_date": "2023-07-08",
+                "chief_complaint": "Right ear itching and discomfort after swimming",
+                "diagnoses": json.dumps(["Acute Otitis Externa"]),
+                "medications": json.dumps(["Ciprofloxacin ear drops", "Ibuprofen 400mg"]),
+                "flagged_values": json.dumps([]),
+                "summary": "Swimmer's ear cleared completely after 5 days of topical antibiotic drops.",
+                "specialty": "ENT"
+            }
+        ]
+    },
+    "56-7890-1234-5678": {
+        "name": "Anita Verma",
+        "age": 26,
+        "gender": "Female",
+        "phone": "9543210987",
+        "abha_id": "56-7890-1234-5678",
+        "avatar": "👩‍🦰",
+        "badge": "ENT & Allergy",
+        "history": [
+            {
+                "visit_date": "2024-12-01",
+                "chief_complaint": "Bilateral throbbing facial pressure, thick nasal discharge, and frontal headache",
+                "diagnoses": json.dumps(["Acute Exacerbation of Chronic Maxillary Sinusitis"]),
+                "medications": json.dumps(["Amoxicillin-Clavulanate 625mg BD x 7d", "Fluticasone Furoate Nasal Spray 1 puff BD", "Saline rinse"]),
+                "flagged_values": json.dumps(["PNS X-Ray: Bilateral maxillary sinus haziness with mucosal thickening"]),
+                "summary": "Bacterial sinusitis flare-up treated with oral antibiotics and steroid nasal spray.",
+                "specialty": "ENT"
+            },
+            {
+                "visit_date": "2023-09-15",
+                "chief_complaint": "Excessive morning sneezing bouts (15-20 sneezes) and watery itchy eyes",
+                "diagnoses": json.dumps(["Perennial Allergic Rhinitis (Dust Mite Allergy)"]),
+                "medications": json.dumps(["Bilastine 20mg OD", "Montelukast 10mg OD"]),
+                "flagged_values": json.dumps(["Skin Prick Test: Positive for Dermatophagoides pteronyssinus (House Dust Mite)"]),
+                "summary": "Allergen sensitization confirmed. Prescribed non-sedating antihistamines and dust avoidance measures.",
+                "specialty": "Allergy / Immunology"
+            },
+            {
+                "visit_date": "2022-01-10",
+                "chief_complaint": "Right wrist tenderness from repetitive typing",
+                "diagnoses": json.dumps(["De Quervain's Tenosynovitis (Right Wrist)"]),
+                "medications": json.dumps(["Thumb spica splint", "Diclofenac gel"]),
+                "flagged_values": json.dumps([]),
+                "summary": "Repetitive strain injury. Advised ergonomic workstation setup and rest.",
+                "specialty": "Orthopedics"
+            }
+        ]
+    }
+}
 
-    prompt = f"""You are a medical data extraction AI. The patient is speaking {language}.
+
+def seed_abha_history(abha_id: str, db: Session):
+    """Seed mock ABHA history into VisitHistory table if not already present."""
+    if not abha_id:
+        return
+    # Check if already seeded for this specific abha_id
+    existing = db.query(VisitHistory).filter(VisitHistory.abha_id == abha_id).first()
+    if existing:
+        return
+    
+    profile = ABHA_PROFILES.get(abha_id)
+    if not profile or "history" not in profile:
+        return
+    
+    for visit in profile["history"]:
+        record = VisitHistory(
+            abha_id=abha_id,
+            visit_date=visit["visit_date"],
+            chief_complaint=visit["chief_complaint"],
+            diagnoses=visit["diagnoses"],
+            medications=visit["medications"],
+            flagged_values=visit["flagged_values"],
+            summary=visit["summary"],
+            specialty=visit["specialty"],
+            is_relevant=False,
+            relevance_reason=None
+        )
+        db.add(record)
+    db.commit()
+    print(f"✅ Seeded {len(profile['history'])} mock ABHA history records for {profile['name']} ({abha_id})")
+
+
+# ── Context-Aware History Filter (Background Task) ──
+HISTORY_FILTER_TEMPLATE = """{
+  "results": [
+    {"visit_id": 1, "is_relevant": true, "reason": "Detailed clinical correlation explaining why this past record is directly relevant to today's complaint"},
+    {"visit_id": 2, "is_relevant": false, "reason": "Clinical explanation why this past visit is unrelated"}
+  ]
+}"""
+
+
+def filter_history_background(patient_id_db: int, abha_id: str, chief_complaint: str):
+    """Background task: Uses Qwen to filter past ABHA history strictly by relevance to THIS patient's complaint."""
+    db = SessionLocal()
+    try:
+        patient = db.query(PatientRecord).filter(PatientRecord.id == patient_id_db).first()
+        past_visits = db.query(VisitHistory).filter(VisitHistory.abha_id == abha_id).all()
+        if not past_visits or not patient:
+            return
+        
+        # Build concise history summary for LLM
+        visits_for_llm = []
+        for v in past_visits:
+            visits_for_llm.append({
+                "visit_id": v.id,
+                "date": v.visit_date,
+                "complaint": v.chief_complaint,
+                "diagnoses": json.loads(v.diagnoses) if v.diagnoses else [],
+                "medications": json.loads(v.medications) if v.medications else [],
+                "flagged_values": json.loads(v.flagged_values) if v.flagged_values else [],
+                "specialty": v.specialty
+            })
+        
+        prompt = f"""You are a clinical decision support AI acting on behalf of a doctor reviewing a patient's historical medical records.
+The patient is presenting TODAY at the triage kiosk with the following Chief Complaint:
+"{chief_complaint}"
+
+Here is the patient's verified past medical history from ABHA:
+{json.dumps(visits_for_llm, indent=2)}
+
+TASK: For EACH past visit, determine if it is MEDICALLY RELEVANT to today's chief complaint ("{chief_complaint}").
+
+CLINICAL RELEVANCE RULES:
+1. RELEVANT (is_relevant: true):
+   - Involves the SAME organ system, anatomical region, or related etiology (e.g. past STEMI/Heart Attack or HTN is RELEVANT when patient has chest pain or breathlessness; Gastroenterology/Gastritis is RELEVANT when presenting for abdominal pain).
+   - Involves active medications that could interact or explain current symptoms.
+   - Contains lab flags or chronic diagnoses directly tied to the current complaint.
+2. NOT RELEVANT (is_relevant: false):
+   - Belongs to a completely unrelated specialty/organ system (e.g., Cardiology/Heart Attack or Knee Osteoarthritis when presenting for Abdominal pain).
+   - A minor, completely resolved past issue with no clinical bearing on today's presentation.
+
+IMPORTANT: Set `is_relevant` to true or false. Provide a concise, professional clinical reason in `reason`.
+
+Output ONLY valid JSON:
+{HISTORY_FILTER_TEMPLATE}"""
+
+        print(f"→ Running ABHA clinical relevance filter for '{chief_complaint}' on patient {patient.patient_id}...")
+        response_text = call_llm(prompt)
+        result_json = json.loads(extract_json_string(response_text))
+        result_json = unwrap_json(result_json)
+        
+        results = result_json.get("results", [])
+        if not isinstance(results, list):
+            results = [result_json] if isinstance(result_json, dict) else []
+        
+        relevance_map = {}
+        for item in results:
+            visit_id = item.get("visit_id")
+            raw_rel = item.get("is_relevant")
+            if isinstance(raw_rel, bool):
+                is_relevant = raw_rel
+            else:
+                is_relevant = str(raw_rel).strip().lower() in ["true", "1", "yes"]
+            reason = str(item.get("reason", "")).strip()
+            if visit_id is not None:
+                relevance_map[str(visit_id)] = {
+                    "is_relevant": is_relevant,
+                    "reason": reason
+                }
+        
+        patient.abha_relevance_json = json.dumps(relevance_map)
+        db.commit()
+        print(f"✅ ABHA clinical relevance filter complete for patient {patient.patient_id}. {sum(1 for r in relevance_map.values() if r.get('is_relevant'))} relevant visits attached.")
+    except Exception as e:
+        print(f"❌ History filter error: {e}")
+    finally:
+        db.close()
+
+
+# ── Unsure vs Denial Helpers ──
+UNSURE_PATTERNS = [
+    "not sure", "unsure", "dont know", "don't know", "not certain", "uncertain", 
+    "no idea", "pata nahi", "pata nahin", "malum nahi", "maloom nahi", "nahi pata", 
+    "yaad nahi", "yaad nhi", "yaad nahin", "याद नहीं", "याद नाही", "confirm nahi", 
+    "confirm nhi", "not confirmed", "unconfirmed", "bhul gaya", "bhool gaya", 
+    "mai confirm nahi", "main confirm nahi", "mujhe yaad nahi", "mujhe yaad nhi", 
+    "mujhe confirm nahi", "mujhe confirm nhi", "shayad", "maybe", "not remembered",
+    "पता नहीं", "मालूम नहीं", "माहित नाही", "తెలియదు", "தெரியாது", "জানা নেই", 
+    "ખબર નથી", "ಗೊತ್ತಿಲ್ಲ", "ಅറിയിಲ್ಲ", "ਨਹੀਂ ਪਤਾ", "🤷 not sure", "🤷"
+]
+
+DENIAL_PATTERNS = [
+    "no", "nahi", "nahin", "नहीं", "no allergies", "none", "nothing", 
+    "kuch nahi", "kuch nahi hai", "na", "न", "ना", "n", "nope", "never", "nil", "✓ no", "✗ no"
+]
+
+def is_unsure_response(text: str) -> bool:
+    if not text:
+        return False
+    t = text.strip().lower()
+    return any(p in t for p in UNSURE_PATTERNS)
+
+def is_denial_response(text: str) -> bool:
+    if not text:
+        return False
+    t = text.strip().lower()
+    if is_unsure_response(t):
+        return False
+    if t in DENIAL_PATTERNS:
+        return True
+    return any(t == p or t.startswith(p + " ") or t.endswith(" " + p) for p in DENIAL_PATTERNS)
+
+
+# ── Instant Patient Builder (0ms LLM Overhead) ──
+def build_patient_from_transcript(transcript, language, is_ayush, pt_id, db, abha_id=None, patient_name="Patient", age="", gender="", phone=""):
+    t_lower = transcript.lower()
+    is_emerg = any(w in t_lower for w in [
+        "chest pain", "heart", "attack", "breath", "stroke", "paralysis", "unconscious", "bleeding", "accident",
+        "सीने में दर्द", "हार्ट", "अटैक", "सांस", "बेहोश", "खून", "छातीत दुखणे", "గుండె", "நெஞ்சு வலி", "বুকের ব্যথা"
+    ])
+
+    dialogue_entry = f"Patient (Chief Complaint - {language}): {transcript}\n"
+
+    patient = PatientRecord(
+        patient_id=pt_id,
+        abha_id=abha_id,
+        is_ayush=bool(is_ayush),
+        patient_name=patient_name or "Patient",
+        age=str(age) if age else "",
+        gender=str(gender) if gender else "",
+        phone=str(phone) if phone else "",
+        chief_complaint=transcript,
+        hpi=f"Patient reports: {transcript}",
+        is_emergency=is_emerg,
+        severity="High" if is_emerg else "Medium",
+        duration="Recording in progress",
+        past_medical_history="Awaiting synthesis",
+        family_history="Awaiting synthesis",
+        personal_history="Awaiting synthesis",
+        allergies="Awaiting synthesis",
+        review_of_systems="Awaiting synthesis",
+        prakriti="Not assessed",
+        vikriti="Not assessed",
+        agni="Not assessed",
+        raw_dialogue=dialogue_entry,
+        is_synthesized=False,
+        created_at=datetime.now().strftime("%I:%M %p")
+    )
+    if db is not None:
+        db.add(patient)
+        db.commit()
+        db.refresh(patient)
+
+    # Seed mock ABHA history if available
+    if abha_id and db is not None:
+        seed_abha_history(abha_id, db)
+
+    # Use SOCRATES-framework question template
+    initial_question = get_phase_question(language, "initial")
+    return patient, initial_question
+
+
+# ── Stage 2: Post-Interview Holistic Clinical Synthesis (Background Task) ──
+def synthesize_and_filter_patient_background(patient_id_db: int, abha_id: Optional[str], language: str, is_ayush: bool):
+    """Runs after intake/document scan finishes: synthesizes full consultation + uploaded documents and filters ABHA records."""
+    db = SessionLocal()
+    try:
+        patient = db.query(PatientRecord).filter(PatientRecord.id == patient_id_db).first()
+        if not patient:
+            return
+        
+        full_transcript = patient.raw_dialogue or patient.chief_complaint
+        ayush_inst = (
+            "The setting is Ayurvedic OPD. Assess Prakriti, Vikriti, Agni if evident."
+            if is_ayush else
+            "The setting is standard Allopathic. Set prakriti, vikriti, agni to 'Not assessed'."
+        )
+
+        docs_summary_str = ""
+        if patient.flagged_lab_values and patient.flagged_lab_values != "[]":
+            try:
+                docs_list = json.loads(patient.flagged_lab_values)
+                if isinstance(docs_list, list) and len(docs_list) > 0:
+                    docs_summary_str = "\n\nUploaded Clinical Documents / Lab Reports:\n"
+                    for idx, d in enumerate(docs_list, 1):
+                        if isinstance(d, dict):
+                            docs_summary_str += f"- Doc #{idx} ({d.get('document_type', 'Report')} - Date: {d.get('document_date', 'Unknown')}): Summary: {d.get('summary', '')}, Diagnoses: {d.get('diagnoses', [])}, Meds: {d.get('medications', [])}, Flagged Labs: {d.get('flagged_values', [])}\n"
+            except Exception as e:
+                print(f"Error parsing docs for synthesis: {e}")
+
+        prompt = f"""You are an expert Chief Medical Officer and AI Clinical Scribe.
+Review the complete patient consultation dialogue and all uploaded medical documents below.
+
+Language spoken: {language}
 {ayush_inst}
 
-Patient's transcript: "{transcript}"
+Complete Consultation Dialogue:
+{full_transcript}
+{docs_summary_str}
 
-TASK: Extract ALL clinical information from the transcript into the structured JSON fields.
-CRITICAL RULES:
-1. ALL extracted values MUST be translated to standard medical English.
-2. DO NOT include any {language} text in the extracted values. The JSON values MUST be strictly English.
-3. DO NOT invent details. If something is not mentioned, use 'None reported' or 'Unknown'.
-4. PHONETIC ERROR CORRECTION: The transcript is generated by an AI speech-to-text tool and may contain phonetic errors (e.g. "bete" instead of "pait/stomach"). You MUST interpret the transcript in a strictly MEDICAL context and auto-correct these errors before extracting symptoms.
-5. Set `next_question` to "next" (the system will handle question generation).
-6. Ensure the output is strictly valid JSON.
+TASK: Perform high-precision clinical synthesis into a standard medical English EHR record.
+
+CRITICAL RULES FOR CLINICAL ACCURACY:
+1. ACCURATELY DISTINGUISH DENIAL ("NO") VS UNCERTAINTY ("NOT SURE / DON'T REMEMBER") VS NOT ASKED:
+   - When the patient clearly DENIES or says "No" / "नहीं" / "कुछ नहीं" / "नहीं है":
+     * family_history: Write "Patient denies family history of similar complaints / No significant family history". NEVER write "Not reported" when the patient explicitly denied it!
+     * past_medical_history: Write "Patient denies past chronic medical conditions / No significant past medical history".
+     * allergies: Write "No known drug or food allergies (NKDA)".
+     * personal_history: Write "No significant lifestyle or habit risks reported".
+   - When the patient expresses UNCERTAINTY or LACK OF MEMORY (e.g., "yaad nahi", "confirm nahi", "pata nahi", "not sure", "don't remember", "uncertain"):
+     * Record clearly as "Uncertain / unconfirmed (patient does not recall / unsure)". DO NOT write "No" or "Denies"!
+   - When a category was NOT asked in dialogue or documents:
+     * Record as "Not assessed".
+
+2. REVIEW OF SYSTEMS (ROS):
+   - Actively summarize all associated systemic symptoms asked or reported during the interview (e.g. "Patient denies fever, vomiting, or dyspnea; reports diaphoresis and nausea" or "Patient denies associated systemic symptoms"). DO NOT leave empty or as "None reported".
+
+3. INTEGRATE UPLOADED DOCUMENTS & LAB REPORTS:
+   - If uploaded documents/reports are present above, integrate their diagnoses, lab flags, and findings into HPI, past history, and review of systems.
+
+4. EMERGENCY TRIAGE & SEVERITY:
+   - Set `is_emergency`: true if red flags (acute coronary syndrome, stroke signs, severe trauma, acute respiratory distress), else false.
+   - Set `severity`: "High" | "Medium" | "Low".
+
+5. Set `next_question` to 'complete'.
 
 Output ONLY valid JSON:
 {PATIENT_JSON_TEMPLATE}"""
 
-    response_text = call_llm(prompt)
-    result_json = json.loads(extract_json_string(response_text))
-    result_json = unwrap_json(result_json)
-    extraction = PatientExtraction(**result_json)
+        print(f"→ Synthesizing full clinical record (dialogue + documents) for patient {patient.patient_id} in background...")
+        response_text = call_llm(prompt)
+        result_json = json.loads(extract_json_string(response_text))
+        result_json = unwrap_json(result_json)
+        ext = PatientExtraction(**result_json)
 
-    patient = PatientRecord(
-        patient_id=pt_id,
-        chief_complaint=extraction.chief_complaint,
-        hpi=extraction.hpi,
-        is_emergency=extraction.is_emergency,
-        severity=extraction.severity,
-        duration=extraction.duration,
-        past_medical_history=extraction.past_medical_history,
-        family_history=extraction.family_history,
-        personal_history=extraction.personal_history,
-        allergies=extraction.allergies,
-        review_of_systems=extraction.review_of_systems,
-        prakriti=extraction.prakriti,
-        vikriti=extraction.vikriti,
-        agni=extraction.agni,
-        created_at=datetime.now().strftime("%I:%M %p")
-    )
-    db.add(patient)
-    db.commit()
-    db.refresh(patient)
-    # Use SOCRATES-framework question template
-    initial_question = get_phase_question(language, "initial")
-    return patient, initial_question
+        # Update patient record with synthesized clinical data
+        patient.chief_complaint = ext.chief_complaint or patient.chief_complaint
+        patient.hpi = ext.hpi or patient.hpi
+        patient.is_emergency = ext.is_emergency
+        patient.severity = ext.severity or patient.severity
+        patient.duration = ext.duration or "Unknown"
+        patient.past_medical_history = ext.past_medical_history or "No significant past medical history"
+        patient.family_history = ext.family_history or "No significant family history"
+        patient.personal_history = ext.personal_history or "No significant lifestyle risks"
+        patient.allergies = ext.allergies or "No known drug allergies (NKDA)"
+        patient.review_of_systems = ext.review_of_systems or "Patient denies associated systemic symptoms"
+        patient.prakriti = ext.prakriti if is_ayush else "Not assessed"
+        patient.vikriti = ext.vikriti if is_ayush else "Not assessed"
+        patient.agni = ext.agni if is_ayush else "Not assessed"
+        patient.is_synthesized = True
+
+        db.commit()
+        print(f"✅ Clinical record synthesis complete for {patient.patient_id} ({patient.chief_complaint})")
+
+        # Now correlate and filter past ABHA visit records against the full synthesized clinical profile
+        if abha_id:
+            filter_history_background(patient_id_db, abha_id, patient.chief_complaint)
+
+    except Exception as e:
+        print(f"❌ Synthesis error: {e}")
+    finally:
+        db.close()
 
 
 # ═══════════════ ENDPOINTS ═══════════════
@@ -365,12 +878,60 @@ async def root():
     return {"message": "MediKiosk v2 Backend running (Offline Mode)"}
 
 
+# ── ABHA Master Profiles Endpoint ──
+@app.get("/api/abha-profiles")
+async def get_abha_profiles():
+    """Returns the 5 pre-configured ABHA patient profiles for quick lookup."""
+    return [
+        {
+            "name": p["name"],
+            "age": p["age"],
+            "gender": p["gender"],
+            "phone": p["phone"],
+            "abha_id": p["abha_id"],
+            "avatar": p["avatar"],
+            "badge": p["badge"],
+            "history_count": len(p["history"])
+        }
+        for p in ABHA_PROFILES.values()
+    ]
+
+@app.get("/api/abha-profile/{abha_id}")
+async def get_abha_profile_by_id(abha_id: str):
+    """Lookup demographic details for a given ABHA ID with hyphen/space normalization."""
+    raw_clean = re.sub(r'[\s\-]', '', abha_id.strip())
+    
+    for key, p in ABHA_PROFILES.items():
+        key_clean = re.sub(r'[\s\-]', '', key)
+        if raw_clean == key_clean or abha_id.strip().lower() == key.lower():
+            return {
+                "found": True,
+                "name": p["name"],
+                "age": p["age"],
+                "gender": p["gender"],
+                "phone": p["phone"],
+                "abha_id": p["abha_id"],
+                "badge": p["badge"],
+                "summary": p["summary"] if "summary" in p else ""
+            }
+    return {
+        "found": False,
+        "message": f"No ABHA account found with number '{abha_id}'. Please check the 14-digit number and try again."
+    }
+
+
 # ── Initial Complaint (Audio) ──
 @app.post("/api/process-audio")
 async def process_audio(
+    background_tasks: BackgroundTasks,
     audio: UploadFile = File(...),
     language: str = Form("English"),
     is_ayush: bool = Form(False),
+    abha_id: Optional[str] = Form(None),
+    patient_name: Optional[str] = Form("Patient"),
+    age: Optional[str] = Form(""),
+    gender: Optional[str] = Form(""),
+    phone: Optional[str] = Form(""),
     db: Session = Depends(get_db)
 ):
     audio_bytes = await audio.read()
@@ -385,22 +946,41 @@ async def process_audio(
     segments, info = whisper_pipeline.transcribe(
         tmp_path, 
         language=lang_code, 
-        beam_size=5,
+        beam_size=1,
+        best_of=1,
         vad_filter=True,
+        vad_parameters=dict(
+            min_silence_duration_ms=500,
+            threshold=0.5
+        ),
+        initial_prompt="A clinical consultation in a hospital OPD. Symptoms, pain, fever, duration, past history.",
         condition_on_previous_text=False
     )
     transcript = " ".join([segment.text for segment in segments]).strip()
     os.remove(tmp_path)
     print(f"Transcript: {transcript}")
 
-    # 2. LLM extraction
-    patient, next_q = build_patient_from_transcript(transcript, language, is_ayush, pt_id, db)
+    # 2. Instant patient initialization (0ms LLM calls)
+    patient, next_q = build_patient_from_transcript(
+        transcript=transcript,
+        language=language,
+        is_ayush=is_ayush,
+        pt_id=pt_id,
+        db=db,
+        abha_id=abha_id,
+        patient_name=patient_name,
+        age=age,
+        gender=gender,
+        phone=phone
+    )
 
     return {
         "status": "success",
         "extracted_complaint": patient.chief_complaint,
         "is_emergency": patient.is_emergency,
         "patient_id": patient.patient_id,
+        "patient_name": patient.patient_name,
+        "abha_id": patient.abha_id,
         "transcript": transcript,
         "next_question": next_q
     }
@@ -409,19 +989,38 @@ async def process_audio(
 # ── Initial Complaint (Text) ──
 @app.post("/api/process-text")
 async def process_text(
+    background_tasks: BackgroundTasks,
     transcript: str = Form(...),
     language: str = Form("English"),
     is_ayush: bool = Form(False),
+    abha_id: Optional[str] = Form(None),
+    patient_name: Optional[str] = Form("Patient"),
+    age: Optional[str] = Form(""),
+    gender: Optional[str] = Form(""),
+    phone: Optional[str] = Form(""),
     db: Session = Depends(get_db)
 ):
     pt_id = f"PT-{str(uuid.uuid4())[:4].upper()}"
-    patient, next_q = build_patient_from_transcript(transcript, language, is_ayush, pt_id, db)
+    patient, next_q = build_patient_from_transcript(
+        transcript=transcript,
+        language=language,
+        is_ayush=is_ayush,
+        pt_id=pt_id,
+        db=db,
+        abha_id=abha_id,
+        patient_name=patient_name,
+        age=age,
+        gender=gender,
+        phone=phone
+    )
 
     return {
         "status": "success",
         "extracted_complaint": patient.chief_complaint,
         "is_emergency": patient.is_emergency,
         "patient_id": patient.patient_id,
+        "patient_name": patient.patient_name,
+        "abha_id": patient.abha_id,
         "transcript": transcript,
         "next_question": next_q
     }
@@ -434,111 +1033,39 @@ def handle_followup_extraction(
     conversation_context: str,
     is_ayush: bool,
     follow_up_count: int,
-    db: Session
+    db: Session,
+    background_tasks: Optional[BackgroundTasks] = None
 ):
-    ayush_extra = " Also probe for Ayurvedic parameters if relevant." if is_ayush else ""
+    phase_names = {
+        0: "Duration / Onset",
+        1: "Radiation of Pain",
+        2: "Associated Symptoms (ROS)",
+        3: "Medications & Relieving Factors",
+        4: "Past Medical / Family / Lifestyle",
+        5: "Allergies"
+    }
+    phase_label = phase_names.get(follow_up_count, f"Phase {follow_up_count}")
+    prev_q = get_phase_question(language, follow_up_count - 1 if follow_up_count > 0 else "initial")
+    dialogue_entry = f"Doctor ({phase_label}): {prev_q}\nPatient ({language}): {transcript}\n"
 
-    answering_phase_desc = {
-        0: "The patient is answering about ONSET and DURATION of symptoms. Extract into 'duration' and 'hpi'.",
-        1: "The patient is answering whether pain RADIATES or spreads to other parts of the body. Extract into 'hpi' (e.g. 'No radiation to other body parts' if denied, or specify where it radiates).",
-        2: "The patient is answering REVIEW OF SYSTEMS (associated symptoms: fever, nausea, vomiting, weakness, etc.). Extract into 'review_of_systems'. If patient denies or says no/none, write: 'Patient denies fever, nausea, vomiting, weakness, or other associated symptoms'.",
-        3: "The patient is answering about MEDICATIONS taken and AGGRAVATING/RELIEVING factors. Extract into 'hpi'. If patient denies/none, write: 'No medications taken; no aggravating or relieving factors reported'.",
-        4: "The patient is answering about PAST MEDICAL HISTORY, FAMILY HISTORY, and LIFESTYLE (smoking, alcohol, diet). Extract into 'past_medical_history', 'family_history', and 'personal_history'. If no past medical history, write: 'No significant past medical history reported'.",
-        5: "The patient is answering about ALLERGIES (medicines, food). Extract into 'allergies'. If patient denies or says no/none, write: 'No known drug or food allergies (NKDA)'."
-    }.get(follow_up_count, "Extract any relevant clinical information.")
-
-    prompt = f"""You are a medical data extraction AI. The patient is speaking {language}.
-You are reviewing follow-up answers for a patient whose chief complaint is: "{patient.chief_complaint}".
-
-CURRENT CLINICAL FOCUS:
-{answering_phase_desc}
-
-Previous conversation context:
-{conversation_context}
-
-Patient's latest answer: "{transcript}"
-
-TASK:
-1. Extract any NEW clinical information from the patient's latest answer into the "updates" dictionary.
-2. CRITICAL: The extracted information inside the "updates" dictionary MUST BE TRANSLATED TO ENGLISH.
-3. PHONETIC ERROR CORRECTION: Interpret speech-to-text errors in a strictly MEDICAL context.
-4. NEGATIVE RESPONSES: If the patient denies symptoms or says "no" / "none" / "नहीं":
-   - For Review of Systems (step 2): write "Patient denies fever, nausea, vomiting, weakness, or other associated symptoms"
-   - For Allergies (step 5): write "No known drug or food allergies (NKDA)"
-   - For Radiation (step 1): write "No radiation to other body parts"
-   - For Past History (step 4): write "No significant past medical history reported"
-5. Do NOT leave a category as null if the patient answered it (even if negative/denial).
-6. Set `next_question` to "next".
-7. Set `is_complete` to false.
-
-Output ONLY valid JSON:
-{FOLLOWUP_JSON_TEMPLATE}"""
-
-    try:
-        response_text = call_llm(prompt)
-        result_json = json.loads(extract_json_string(response_text))
-        result_json = unwrap_json(result_json)
-        fu_result = FollowUpResponse(**result_json)
-    except Exception as e:
-        print(f"Follow-up error: {e}")
-        fu_result = FollowUpResponse(updates={}, is_complete=False)
-
-    updates = fu_result.updates if isinstance(fu_result.updates, dict) else {}
-
-    # Deterministic safeguard: if patient answered No/negative to a specific phase
-    t_clean = transcript.strip().lower()
-    is_neg = t_clean in ["no", "nahi", "nahin", "नहीं", "no allergies", "none", "nothing", "kuch nahi", "kuch nahi hai", "na", "not sure", "न", "ना", "n"]
-
-    if follow_up_count == 2:
-        ros_val = updates.get("review_of_systems")
-        if not ros_val or ros_val.strip().lower() in ["null", "none", "none reported", "unknown", ""]:
-            if is_neg:
-                updates["review_of_systems"] = "Patient denies fever, nausea, vomiting, weakness, or other associated symptoms"
-            elif len(transcript.strip()) > 0:
-                updates["review_of_systems"] = f"Reported: {transcript.strip()}"
-
-    elif follow_up_count == 5:
-        allg_val = updates.get("allergies")
-        if not allg_val or allg_val.strip().lower() in ["null", "none", "none reported", "unknown", ""]:
-            if is_neg:
-                updates["allergies"] = "No known drug or food allergies (NKDA)"
-            elif len(transcript.strip()) > 0:
-                updates["allergies"] = f"Reported: {transcript.strip()}"
-
-    elif follow_up_count == 1:
-        if is_neg and not updates.get("hpi"):
-            updates["hpi"] = "No radiation to other body parts"
-
-    elif follow_up_count == 4:
-        pmh_val = updates.get("past_medical_history")
-        if not pmh_val or pmh_val.strip().lower() in ["null", "none", "none reported", "unknown", ""]:
-            updates["past_medical_history"] = "No significant past medical history reported"
-
-    # Apply updates to patient record in DB
-    for field, info in updates.items():
-        if info and isinstance(info, str) and info.strip().lower() not in ["null", "none", ""]:
-            if "updated info in english" in info.lower() or "updated hpi" in info.lower():
-                continue
-            if hasattr(patient, field):
-                current = getattr(patient, field) or ""
-                info_clean = info.lstrip('• ').strip()
-                # Skip if this exact info is already present (prevents duplicates)
-                if info_clean and info_clean in current:
-                    continue
-                if current and current not in ("None reported", "Not assessed", "Unknown", ""):
-                    setattr(patient, field, current.strip() + "\n• " + info_clean)
-                else:
-                    setattr(patient, field, "• " + info_clean)
-
-    db.commit()
-    db.refresh(patient)
+    current_dialogue = patient.raw_dialogue or ""
+    patient.raw_dialogue = current_dialogue + dialogue_entry
 
     is_complete = True if follow_up_count >= 5 else False
     next_question = get_phase_question(language, follow_up_count) if follow_up_count < 5 else "Thank you. Let us proceed to document scanning."
 
+    # When the 5-question interview finishes, trigger full AI synthesis & ABHA filter in background
+    if is_complete and background_tasks is not None:
+        print(f"🚀 Patient intake complete! Dispatching holistic AI synthesis & ABHA history filter for {patient.patient_id}...")
+        background_tasks.add_task(synthesize_and_filter_patient_background, patient.id, patient.abha_id, language, is_ayush)
+
+    if db is not None:
+        db.commit()
+        db.refresh(patient)
+
     return {
         "status": "success",
-        "extracted_info": " | ".join(f"{k}: {v}" for k, v in updates.items() if v and str(v).lower() not in ["null", ""]),
+        "extracted_info": f"Recorded: {transcript}",
         "is_complete": is_complete,
         "next_question": next_question,
         "transcript": transcript
@@ -548,6 +1075,7 @@ Output ONLY valid JSON:
 # ── Follow-up (Text) ──
 @app.post("/api/follow-up-text")
 async def follow_up_text(
+    background_tasks: BackgroundTasks,
     transcript: str = Form(...),
     language: str = Form("English"),
     patient_id: str = Form(...),
@@ -567,13 +1095,15 @@ async def follow_up_text(
         conversation_context=conversation_context,
         is_ayush=is_ayush,
         follow_up_count=follow_up_count,
-        db=db
+        db=db,
+        background_tasks=background_tasks
     )
 
 
 # ── Follow-up (Audio) ──
 @app.post("/api/follow-up")
 async def follow_up_audio(
+    background_tasks: BackgroundTasks,
     audio: UploadFile = File(...),
     language: str = Form("English"),
     patient_id: str = Form(...),
@@ -595,8 +1125,14 @@ async def follow_up_audio(
     segments, info = whisper_pipeline.transcribe(
         tmp_path, 
         language=lang_code, 
-        beam_size=5,
+        beam_size=1,
+        best_of=1,
         vad_filter=True,
+        vad_parameters=dict(
+            min_silence_duration_ms=500,
+            threshold=0.5
+        ),
+        initial_prompt="A clinical consultation in a hospital OPD. Symptoms, pain, fever, duration, past medical history.",
         condition_on_previous_text=False
     )
     transcript = " ".join([segment.text for segment in segments]).strip()
@@ -610,7 +1146,8 @@ async def follow_up_audio(
         conversation_context=conversation_context,
         is_ayush=is_ayush,
         follow_up_count=follow_up_count,
-        db=db
+        db=db,
+        background_tasks=background_tasks
     )
 
 
@@ -749,6 +1286,23 @@ async def process_document(
     }
 
 
+# ── Finalize Intake & Trigger Comprehensive Synthesis (Spoken Dialogue + Documents) ──
+@app.post("/api/finalize-intake")
+async def finalize_intake(
+    background_tasks: BackgroundTasks,
+    patient_id: str = Form(...),
+    language: str = Form("English"),
+    is_ayush: bool = Form(False),
+    db: Session = Depends(get_db)
+):
+    patient = db.query(PatientRecord).filter(PatientRecord.patient_id == patient_id).first()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    
+    background_tasks.add_task(synthesize_and_filter_patient_background, patient.id, patient.abha_id, language, is_ayush)
+    return {"status": "success", "message": "Comprehensive synthesis (dialogue + documents) queued"}
+
+
 # ── Red Flag Check ──
 @app.get("/api/red-flag-check")
 async def red_flag_check(patient_id: str, db: Session = Depends(get_db)):
@@ -810,6 +1364,10 @@ async def get_patients(db: Session = Depends(get_db)):
     patients = db.query(PatientRecord).order_by(PatientRecord.id.desc()).all()
     return [{
         "patient_id": p.patient_id,
+        "patient_name": p.patient_name or "Patient",
+        "age": p.age,
+        "gender": p.gender,
+        "abha_id": p.abha_id,
         "created_at": p.created_at,
         "is_emergency": p.is_emergency
     } for p in patients]
@@ -838,6 +1396,11 @@ async def get_patient_summary(patient_id: Optional[str] = None, db: Session = De
 
     return {
         "patient_id": patient.patient_id,
+        "patient_name": patient.patient_name or "Patient",
+        "age": patient.age or "",
+        "gender": patient.gender or "",
+        "phone": patient.phone or "",
+        "abha_id": patient.abha_id,
         "chief_complaint": patient.chief_complaint or "Not recorded",
         "hpi": patient.hpi or "None reported",
         "is_emergency": patient.is_emergency,
@@ -856,33 +1419,101 @@ async def get_patient_summary(patient_id: Optional[str] = None, db: Session = De
     }
 
 
+# ── Patient History (ABHA-linked past visits) ──
+@app.get("/api/patient-history")
+async def get_patient_history(patient_id: str, db: Session = Depends(get_db)):
+    """Returns past visit history strictly for this patient's linked ABHA profile."""
+    patient = db.query(PatientRecord).filter(PatientRecord.patient_id == patient_id).first()
+    if not patient or not patient.abha_id:
+        return {"relevant_history": [], "other_history": [], "filter_status": "no_abha", "abha_id": None}
+    
+    # Ensure profile history is seeded if not present
+    seed_abha_history(patient.abha_id, db)
+    
+    past_visits = db.query(VisitHistory).filter(VisitHistory.abha_id == patient.abha_id).all()
+    if not past_visits:
+        return {"relevant_history": [], "other_history": [], "filter_status": "no_history", "abha_id": patient.abha_id}
+    
+    # Load this patient's isolated relevance mapping
+    relevance_map = {}
+    if patient.abha_relevance_json:
+        try:
+            relevance_map = json.loads(patient.abha_relevance_json)
+        except Exception:
+            relevance_map = {}
+    
+    filter_complete = bool(relevance_map)
+    
+    relevant = []
+    other = []
+    for v in past_visits:
+        rel_info = relevance_map.get(str(v.id), {})
+        is_rel = rel_info.get("is_relevant", False)
+        reason = rel_info.get("reason", "")
+        
+        visit_data = {
+            "id": v.id,
+            "visit_date": v.visit_date,
+            "chief_complaint": v.chief_complaint,
+            "diagnoses": json.loads(v.diagnoses) if v.diagnoses else [],
+            "medications": json.loads(v.medications) if v.medications else [],
+            "flagged_values": json.loads(v.flagged_values) if v.flagged_values else [],
+            "summary": v.summary,
+            "specialty": v.specialty,
+            "is_relevant": is_rel,
+            "relevance_reason": reason
+        }
+        if is_rel:
+            relevant.append(visit_data)
+        else:
+            other.append(visit_data)
+    
+    # Sort by date descending
+    relevant.sort(key=lambda x: x["visit_date"], reverse=True)
+    other.sort(key=lambda x: x["visit_date"], reverse=True)
+    
+    return {
+        "relevant_history": relevant,
+        "other_history": other,
+        "filter_status": "complete" if filter_complete else "processing",
+        "abha_id": patient.abha_id,
+        "patient_name": patient.patient_name
+    }
+
+
 @app.post("/api/demo-data")
-async def demo_data(db: Session = Depends(get_db)):
+async def demo_data(background_tasks: BackgroundTasks, abha_id: Optional[str] = "12-3456-7890-1234", db: Session = Depends(get_db)):
+    profile = ABHA_PROFILES.get(abha_id, ABHA_PROFILES["12-3456-7890-1234"])
     pt_id = f"PT-DEMO-{str(uuid.uuid4())[:4].upper()}"
     
     demo_doc = {
-        "document_type": "Complete Blood Count (CBC)",
-        "diagnoses": ["Anemia"],
-        "medications": ["Iron supplements (prescribed)"],
-        "flagged_values": ["Hemoglobin 9.2 g/dL (Low)", "RBC count low"],
+        "document_type": "Lipid Profile & ECG Report",
+        "diagnoses": ["Hyperlipidemia", "CAD Status Post-PCI"],
+        "medications": ["Atorvastatin 40mg OD", "Aspirin 75mg OD"],
+        "flagged_values": ["LDL Cholesterol: 145 mg/dL (High)", "Total Cholesterol: 230 mg/dL (High)"],
         "document_date": datetime.now().strftime("%Y-%m-%d"),
-        "summary": "Blood test indicates moderate anemia with low hemoglobin levels.",
+        "summary": "Follow-up lab report showing elevated LDL cholesterol and stable cardiac rhythm.",
         "file_url": "",
-        "raw_text": "Demo document text"
+        "raw_text": "Demo cardiology follow-up document"
     }
 
     patient = PatientRecord(
         patient_id=pt_id,
-        chief_complaint="Severe headache and persistent fatigue",
-        hpi="• Started 3 days ago\n• Pain is throbbing and located in the frontal region\n• Accompanied by mild nausea",
-        is_emergency=False,
-        severity="Medium",
-        duration="3 days",
-        past_medical_history="• Hypertension (controlled)",
-        family_history="• Mother had diabetes",
-        personal_history="• Non-smoker, occasional alcohol",
-        allergies="• Penicillin (causes rash)",
-        review_of_systems="• No chest pain\n• No shortness of breath",
+        abha_id=profile["abha_id"],
+        patient_name=profile["name"],
+        age=str(profile["age"]),
+        gender=profile["gender"],
+        phone=profile["phone"],
+        chief_complaint="Severe retrosternal chest pain with left arm radiation and sweating",
+        hpi="• Started 2 hours ago while walking\n• Crushing substernal pressure, severity 8/10\n• Accompanied by diaphoresis and mild nausea",
+        is_emergency=True,
+        severity="High",
+        duration="2 hours",
+        past_medical_history="• Myocardial Infarction in 2024 (Stented LAD)\n• Type 2 Diabetes Mellitus",
+        family_history="• Father had premature CAD at age 52",
+        personal_history="• Non-smoker, vegetarian diet",
+        allergies="• None reported",
+        review_of_systems="• No fever\n• Shortness of breath on exertion",
         prakriti="Not assessed",
         vikriti="Not assessed",
         agni="Not assessed",
@@ -892,7 +1523,12 @@ async def demo_data(db: Session = Depends(get_db)):
     db.add(patient)
     db.commit()
     db.refresh(patient)
-    return {"status": "success", "patient_id": pt_id}
+
+    # Seed ABHA history and trigger AI filter in background
+    seed_abha_history(profile["abha_id"], db)
+    background_tasks.add_task(filter_history_background, patient.id, profile["abha_id"], patient.chief_complaint)
+
+    return {"status": "success", "patient_id": pt_id, "patient_name": profile["name"], "abha_id": profile["abha_id"]}
 
 
 if __name__ == "__main__":
