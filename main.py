@@ -103,67 +103,315 @@ LANGUAGE_CODES = {
     "Gujarati": "gu", "Punjabi": "pa", "Urdu": "ur"
 }
 
-# ── Pre-written Follow-up Questions (human-verified, no AI typos) ──
-PHASE_QUESTIONS = {
-    "Hindi": {
-        "initial": "यह तकलीफ़ आपको कब से हो रही है?",
-        0: "क्या यह दर्द शरीर के किसी और हिस्से में भी जाता है?",
-        1: "इसके साथ और कोई तकलीफ़ है? जैसे बुखार, उल्टी, या कमज़ोरी?",
-        2: "क्या आपने इसके लिए कोई दवा ली है? किसी चीज़ से आराम मिलता है या तकलीफ़ बढ़ती है?",
-        3: "क्या आपको पहले कोई बीमारी रही है? परिवार में किसी को कोई बीमारी है? क्या आप धूम्रपान या शराब का सेवन करते हैं?",
-        4: "क्या आपको किसी दवा या खाने की चीज़ से एलर्जी है?",
-        "default": "और कुछ बताना चाहेंगे?"
+# ── Pre-written Symptom-Specific Question Sets (human-verified, no AI typos) ──
+CATEGORY_QUESTIONS = {
+    "chest_pain": {
+        "Hindi": {
+            "initial": "यह सीने में दर्द या सांस लेने में तकलीफ़ आपको कब से हो रही है?",
+            0: "क्या यह दर्द आपके बाएं हाथ, कंधे, जबड़े या पीठ की तरफ फैलता है?",
+            1: "क्या इसके साथ सांस फूलना, ठंडा पसीना, चक्कर या घबराहट हो रही है?",
+            2: "क्या चलने या मेहनत करने से दर्द बढ़ता है और आराम करने से घटता है?",
+            3: "क्या आपको पहले बीपी, शुगर, दिल की बीमारी रही है या आप धूम्रपान करते हैं?",
+            4: "क्या आपको किसी दवा या खाने की चीज़ से एलर्जी है?",
+            "default": "और कुछ बताना चाहेंगे?"
+        },
+        "English": {
+            "initial": "How long have you been having this chest discomfort or breathing trouble?",
+            0: "Does this pain spread to your left arm, shoulder, jaw, or back?",
+            1: "Are you experiencing shortness of breath, cold sweats, dizziness, or nausea?",
+            2: "Does walking or exertion make it worse, and does resting relieve it?",
+            3: "Do you have a history of high BP, diabetes, heart disease, or smoking?",
+            4: "Are you allergic to any medicines or foods?",
+            "default": "Is there anything else you would like to tell me?"
+        },
+        "Tamil": {
+            "initial": "இந்த நெஞ்சு வலி அல்லது மூச்சுத்திணறல் எவ்வளவு நாளாக இருக்கிறது?",
+            0: "இந்த வலி இடது கை, தோள்பட்டை, தாடை அல்லது முதுகுக்கு பரவுகிறதா?",
+            1: "இதனுடன் மூச்சுத்திணறல், குளிர்ந்த வியர்வை, மயக்கம் அல்லது குமட்டல் உள்ளதா?",
+            2: "நடக்கும்போது வலி அதிகமாகி ஓய்வெடுக்கும்போது குறைகிறதா?",
+            3: "உங்களுக்கு ரத்த அழுத்தம், சர்க்கரை நோய், இதய நோய் உள்ளதா அல்லது புகைபிடிப்பீர்களா?",
+            4: "உங்களுக்கு ஏதாவது மருந்து அல்லது உணவுக்கு ஒவ்வாமை இருக்கிறதா?",
+            "default": "வேறு ஏதாவது சொல்ல விரும்புகிறீர்களா?"
+        },
+        "Telugu": {
+            "initial": "ఈ గుండె నొప్పి లేదా శ్వాస తీసుకోవడంలో ఇబ్బంది ఎంత కాలంగా ఉంది?",
+            0: "ఈ నొప్పి ఎడమ చేయి, భుజం, దవడ లేదా వెనుక భాగానికి వ్యాపిస్తుందా?",
+            1: "దీనితో పాటు శ్వాస ఆడకపోవడం, చల్లని చెమటలు, తలతిరగడం లేదా వికారం ఉన్నాయా?",
+            2: "నడిచినప్పుడు నొప్పి పెరిగి, విశ్రాంతి తీసుకున్నప్పుడు తగ్గుతుందా?",
+            3: "మీకు బీపీ, షుగర్, గుండె జబ్బుల చరిత్ర ఉందా లేదా పొగ తాగుతారా?",
+            4: "మీకు ఏదైనా మందు లేదా ఆహారానికి అలర్జీ ఉందా?",
+            "default": "ఇంకా ఏమైనా చెప్పాలనుకుంటున్నారా?"
+        }
     },
-    "English": {
-        "initial": "How long have you been experiencing this problem?",
-        0: "Does this pain spread or travel to any other part of your body?",
-        1: "Are you experiencing any other symptoms like fever, nausea, or weakness?",
-        2: "Have you taken any medicine for this? Does anything make it better or worse?",
-        3: "Do you have any past medical conditions? Any diseases in your family? Do you smoke or drink alcohol?",
-        4: "Are you allergic to any medicines or foods?",
-        "default": "Is there anything else you would like to tell me?"
+    "stomach_pain": {
+        "Hindi": {
+            "initial": "यह पेट दर्द आपको कब से हो रहा है?",
+            0: "क्या यह दर्द पेट के ऊपरी हिस्से में है, नीचे की तरफ या पीठ में जाता है?",
+            1: "क्या उल्टी, दस्त, खट्टी डकार, जलन या बुखार जैसा लग रहा है?",
+            2: "क्या कुछ खाने-पीने से दर्द बढ़ता है या खाली पेट रहने से?",
+            3: "क्या आपको पहले अल्सर, गैस, पथरी की शिकायत रही है या बाहर का खाना खाया था?",
+            4: "क्या आपको किसी दवा या खाने की चीज़ से एलर्जी है?",
+            "default": "और कुछ बताना चाहेंगे?"
+        },
+        "English": {
+            "initial": "How long have you had this stomach or abdominal pain?",
+            0: "Is the pain in the upper abdomen, lower belly, or radiating to the back?",
+            1: "Are you experiencing vomiting, loose motions, acidity, burning, or fever?",
+            2: "Does eating food or drinking water make the pain worse or better?",
+            3: "Do you have a history of ulcers, acidity, gallstones, or recent outside food?",
+            4: "Are you allergic to any medicines or foods?",
+            "default": "Is there anything else you would like to tell me?"
+        },
+        "Tamil": {
+            "initial": "இந்த வயிற்று வலி உங்களுக்கு எவ்வளவு நாளாக இருக்கிறது?",
+            0: "இந்த வலி வயிற்றின் மேல் பகுதியிலா, கீழ் பகுதியிலா அல்லது முதுகில் பரவுகிறதா?",
+            1: "இதனுடன் வாந்தி, வயிற்றுப்போக்கு, நெஞ்செரிச்சல் அல்லது காய்ச்சல் உள்ளதா?",
+            2: "சாப்பிட்ட பிறகு வலி அதிகமாகிறதா அல்லது குறைகிறதா?",
+            3: "உங்களுக்கு குடல் புண், பித்தப்பை கல் அல்லது வெளி உணவு சாப்பிட்ட வரலாறு உள்ளதா?",
+            4: "உங்களுக்கு ஏதாவது மருந்து அல்லது உணவுக்கு ஒவ்வாமை இருக்கிறதா?",
+            "default": "வேறு ஏதாவது சொல்ல விரும்புகிறீர்களா?"
+        },
+        "Telugu": {
+            "initial": "ఈ కడుపు నొప్పి మీకు ఎంత కాలంగా ఉంది?",
+            0: "నొప్పి కడుపు పైభాగంలో ఉందా, కింద ఉందా లేదా వీపులోకి వ్యాపిస్తుందా?",
+            1: "వాంతులు, విరేచనాలు, ఎసిడిటీ, మంట లేదా జ్వరం ఉన్నాయా?",
+            2: "ఆహారం తిన్న తర్వాత నొప్పి పెరుగుతుందా లేదా తగ్గుతుందా?",
+            3: "మీకు అల్సర్, గ్యాస్ట్రిక్, పిత్తాశయ రాళ్ల సమస్య ఉందా లేదా బయటి ఆహారం తిన్నారా?",
+            4: "మీకు ఏదైనా మందు లేదా ఆహారానికి అలర్జీ ఉందా?",
+            "default": "ఇంకా ఏమైనా చెప్పాలనుకుంటున్నారా?"
+        }
     },
-    "Tamil": {
-        "initial": "இந்த பிரச்சனை எவ்வளவு நாளாக இருக்கிறது?",
-        0: "இந்த வலி உடலின் வேறு எந்த பகுதிக்கும் பரவுகிறதா?",
-        1: "இதனுடன் காய்ச்சல், குமட்டல் அல்லது பலவீனம் போன்ற வேறு ஏதாவது தொந்தரவு இருக்கிறதா?",
-        2: "இதற்கு ஏதாவது மருந்து எடுத்துக்கொண்டீர்களா? எதனால் சரியாகிறது அல்லது மோசமாகிறது?",
-        3: "உங்களுக்கு முன்பு ஏதாவது நோய் இருந்ததா? குடும்பத்தில் யாருக்காவது நோய் இருக்கிறதா? புகைபிடிப்பீர்களா அல்லது மது அருந்துவீர்களா?",
-        4: "உங்களுக்கு ஏதாவது மருந்து அல்லது உணவுக்கு ஒவ்வாமை இருக்கிறதா?",
-        "default": "வேறு ஏதாவது சொல்ல விரும்புகிறீர்களா?"
+    "headache": {
+        "Hindi": {
+            "initial": "यह सिरदर्द या चक्कर आपको कब से आ रहे हैं?",
+            0: "क्या यह सिरदर्द आधे सिर में है, माथे पर या गर्दन के पीछे की तरफ?",
+            1: "क्या इसके साथ उल्टी का मन, आंखों के आगे अंधेरा, तेज रोशनी से चिढ़ या कमज़ोरी है?",
+            2: "क्या तनाव, नींद की कमी या स्क्रीन देखने से दर्द बढ़ता है?",
+            3: "क्या आपको हाई बीपी, चश्मे का नंबर, साइनस या परिवार में माइग्रेन की शिकायत है?",
+            4: "क्या आपको किसी दवा या खाने की चीज़ से एलर्जी है?",
+            "default": "और कुछ बताना चाहेंगे?"
+        },
+        "English": {
+            "initial": "How long have you been experiencing this headache or dizziness?",
+            0: "Is the headache throbbing on one side, frontal, or radiating down the neck?",
+            1: "Do you have nausea, sensitivity to bright light, blurred vision, or weakness?",
+            2: "Does stress, lack of sleep, or screen time trigger or worsen the headache?",
+            3: "Do you have a history of high blood pressure, sinus issues, or family migraine?",
+            4: "Are you allergic to any medicines or foods?",
+            "default": "Is there anything else you would like to tell me?"
+        },
+        "Tamil": {
+            "initial": "இந்த தலைவலி அல்லது மயக்கம் எவ்வளவு நாளாக இருக்கிறது?",
+            0: "தலைவலி ஒரு பக்கத்திலா, நெற்றியிலா அல்லது கழுத்தின் பின்புறத்திலா?",
+            1: "இதனுடன் குமட்டல், வெளிச்சத்தை பார்க்க முடியாத நிலை அல்லது பார்வை மங்கலாகுதல் உள்ளதா?",
+            2: "மன அழுத்தம் அல்லது தூக்கமின்மையால் தலைவலி அதிகரிக்கிறதா?",
+            3: "உங்களுக்கு ரத்த அழுத்தம், சைனஸ் அல்லது குடும்பத்தில் மைக்ரேன் வரலாறு உள்ளதா?",
+            4: "உங்களுக்கு ஏதாவது மருந்து அல்லது உணவுக்கு ஒவ்வாமை இருக்கிறதா?",
+            "default": "வேறு ஏதாவது சொல்ல விரும்புகிறீர்களா?"
+        },
+        "Telugu": {
+            "initial": "ఈ తలనొప్పి లేదా తలతిరగడం మీకు ఎంత కాలంగా ఉంది?",
+            0: "తలనొప్పి ఒక వైపున, నుదిటిపై లేదా మెడ వెనుక భాగంలో ఉందా?",
+            1: "వికారం, కాంతిని చూడలేకపోవడం, మసకబారిన చూపు లేదా బలహీనత ఉన్నాయా?",
+            2: "ఒత్తిడి, నిద్రలేమి లేదా స్క్రీన్ చూడటం వల్ల తలనొప్పి పెరుగుతుందా?",
+            3: "మీకు హై బీపీ, సైనస్ లేదా కుటుంబంలో మైగ్రేన్ సమస్యలు ఉన్నాయా?",
+            4: "మీకు ఏదైనా మందు లేదా ఆహారానికి అలర్జీ ఉందా?",
+            "default": "ఇంకా ఏమైనా చెప్పాలనుకుంటున్నారా?"
+        }
     },
-    "Telugu": {
-        "initial": "ఈ సమస్య మీకు ఎంత కాలంగా ఉంది?",
-        0: "ఈ నొప్పి శరీరంలో ఇతర భాగాలకు వ్యాపిస్తుందా?",
-        1: "దీనితో పాటు జ్వరం, వాంతులు లేదా బలహీనత వంటి ఇతర సమస్యలు ఉన్నాయా?",
-        2: "దీని కోసం ఏదైనా మందు వాడారా? దేనివల్ల తగ్గుతుంది లేదా పెరుగుతుంది?",
-        3: "మీకు ఇంతకు ముందు ఏదైనా వ్యాధి ఉందా? కుటుంబంలో ఎవరికైనా వ్యాధి ఉందా? మీరు పొగ తాగుతారా లేదా మద్యం సేవిస్తారా?",
-        4: "మీకు ఏదైనా మందు లేదా ఆహారానికి అలర్జీ ఉందా?",
-        "default": "ఇంకా ఏమైనా చెప్పాలనుకుంటున్నారా?"
+    "fever": {
+        "Hindi": {
+            "initial": "यह बुखार आपको कितने दिनों से आ रहा है?",
+            0: "क्या बुखार ठंड और कंपकंपी के साथ आता है? क्या यह किसी खास समय तेज होता है?",
+            1: "क्या इसके साथ खांसी, गले में खराश, बदन दर्द, दाने या पेशाब में जलन है?",
+            2: "क्या आपने पैरासिटामोल ली है? क्या दवा लेने पर बुखार उतरता है?",
+            3: "क्या घर या पड़ोस में किसी को डेंगू, मलेरिया, टाइफाइड या वायरल बुखार हुआ है?",
+            4: "क्या आपको किसी एंटीबायोटिक या दवा से एलर्जी है?",
+            "default": "और कुछ बताना चाहेंगे?"
+        },
+        "English": {
+            "initial": "How many days have you had this fever?",
+            0: "Does the fever come with chills and shivering, and does it spike at a specific time?",
+            1: "Do you have cough, sore throat, severe body aches, rashes, or burning urination?",
+            2: "Have you taken paracetamol? Does the temperature come down after medicine?",
+            3: "Has anyone in your home or area had dengue, malaria, typhoid, or viral fever recently?",
+            4: "Are you allergic to any antibiotics or medicines?",
+            "default": "Is there anything else you would like to tell me?"
+        },
+        "Tamil": {
+            "initial": "இந்த காய்ச்சல் எத்தனை நாட்களாக இருக்கிறது?",
+            0: "காய்ச்சல் குளிர் மற்றும் நடுக்கத்துடன் வருகிறதா? குறிப்பிட்ட நேரத்தில் அதிகமாகிறதா?",
+            1: "இதனுடன் இருமல், தொண்டை வலி, உடல் வலி அல்லது சிறுநீரில் எரிச்சல் உள்ளதா?",
+            2: "பாராசிட்டமால் மாத்திரை சாப்பிட்டீர்களா? மருந்து எடுத்தவுடன் காய்ச்சல் குறைகிறதா?",
+            3: "அருகில் யாருக்காவது டெங்கு, மலேரியா அல்லது டைபாய்டு காய்ச்சல் உள்ளதா?",
+            4: "உங்களுக்கு ஏதேனும் ஆண்டிபயாடிக் அல்லது மருந்துக்கு ஒவ்வாமை இருக்கிறதா?",
+            "default": "வேறு ஏதாவது சொல்ல விரும்புகிறீர்களா?"
+        },
+        "Telugu": {
+            "initial": "ఈ జ్వరం మీకు ఎన్ని రోజులుగా వస్తోంది?",
+            0: "జ్వరం చలి మరియు వణుకుతో వస్తుందా? ఏదైనా నిర్దిష్ట సమయంలో పెరుగుతుందా?",
+            1: "దగ్గు, గొంతు నొప్పి, తీవ్రమైన ఒళ్లు నొప్పులు లేదా మూత్రంలో మంట ఉన్నాయా?",
+            2: "పారాసిటమాల్ వేసుకున్నారా? మందు వేసుకున్న తర్వాత జ్వరం తగ్గుతుందా?",
+            3: "ఇంట్లో లేదా చుట్టుపక్కల ఎవరికైనా డెంగ్యూ, మలేరియా లేదా టైఫాయిడ్ వచ్చిందా?",
+            4: "మీకు ఏదైనా యాంటీబయాటిక్ లేదా మందుకు అలర్జీ ఉందా?",
+            "default": "ఇంకా ఏమైనా చెప్పాలనుకుంటున్నారా?"
+        }
     },
-    "Bengali": {
-        "initial": "এই সমস্যা আপনার কতদিন ধরে হচ্ছে?",
-        0: "এই ব্যথা কি শরীরের অন্য কোনো জায়গায় ছড়ায়?",
-        1: "এর সাথে জ্বর, বমি বা দুর্বলতার মতো অন্য কোনো সমস্যা আছে?",
-        2: "এর জন্য কি কোনো ওষুধ খেয়েছেন? কিসে আরাম হয় বা কষ্ট বাড়ে?",
-        3: "আগে কি কোনো রোগ ছিল? পরিবারে কারো কি কোনো রোগ আছে? আপনি কি ধূমপান বা মদ্যপান করেন?",
-        4: "আপনার কি কোনো ওষুধ বা খাবারে অ্যালার্জি আছে?",
-        "default": "আর কিছু বলতে চান?"
+    "joint_pain": {
+        "Hindi": {
+            "initial": "यह जोड़ों या कमर का दर्द आपको कब से हो रहा है?",
+            0: "क्या जोड़ पर सूजन, लालिमा या सुबह उठने पर जकड़न महसूस होती है?",
+            1: "क्या कोई चोट लगी थी? क्या चलने-फिरने या सीढ़ियां चढ़ने में तकलीफ़ होती है?",
+            2: "क्या आराम करने या गर्म सिकाई करने से दर्द में राहत मिलती है?",
+            3: "क्या आपको पहले गठिया, यूरिक एसिड, साइटिका या हड्डियों की कमज़ोरी रही है?",
+            4: "क्या आपको किसी दर्द निवारक (पेनकिलर) दवा से एलर्जी है?",
+            "default": "और कुछ बताना चाहेंगे?"
+        },
+        "English": {
+            "initial": "How long have you had this joint or back pain?",
+            0: "Is there visible swelling, redness, or morning stiffness in the joint?",
+            1: "Did you have a fall or injury? Is it difficult to walk or climb stairs?",
+            2: "Does rest or heat application provide relief from the pain?",
+            3: "Do you have a history of arthritis, high uric acid, sciatica, or osteoporosis?",
+            4: "Are you allergic to any painkiller medicines or foods?",
+            "default": "Is there anything else you would like to tell me?"
+        },
+        "Tamil": {
+            "initial": "இந்த மூட்டு அல்லது முதுகு வலி எவ்வளவு நாளாக இருக்கிறது?",
+            0: "மூட்டில் வீக்கம், சிவத்தல் அல்லது காலையில் விறைப்பு தன்மை உள்ளதா?",
+            1: "ஏதாவது காயம் ஏற்பட்டதா? நடப்பதற்கோ அல்லது படிக்கட்டுகள் ஏறுவதற்கோ சிரமமாக உள்ளதா?",
+            2: "ஓய்வெடுப்பதாலோ அல்லது ஒத்தடம் கொடுப்பதாலோ வலி குறைகிறதா?",
+            3: "உங்களுக்கு மூட்டுவாதம், யூரிக் அமிலம் அல்லது எலும்பு தேய்மானம் உள்ளதா?",
+            4: "உங்களுக்கு வலி நிவாரணி மருந்துகளுக்கு ஒவ்வாமை இருக்கிறதா?",
+            "default": "வேறு ஏதாவது சொல்ல விரும்புகிறீர்களா?"
+        },
+        "Telugu": {
+            "initial": "ఈ కీళ్ల లేదా వెన్ను నొప్పి మీకు ఎంత కాలంగా ఉంది?",
+            0: "కీళ్లపై వాపు, ఎరుపుదనం లేదా ఉదయం పూట బిగుతుగా ఉండటం ఉందా?",
+            1: "ఏదైనా గాయం అయిందా? నడవడానికి లేదా మెట్లు ఎక్కడానికి కష్టంగా ఉందా?",
+            2: "విశ్రాంతి లేదా వేడి కాపడం వల్ల నొప్పి తగ్గుతుందా?",
+            3: "మీకు ఆర్థరైటిస్, యూరిక్ యాసిడ్ లేదా ఎముకల బలహీనత సమస్యలు ఉన్నాయా?",
+            4: "మీకు పెయిన్‌కిల్లర్ మందులకు అలర్జీ ఉందా?",
+            "default": "ఇంకా ఏమైనా చెప్పాలనుకుంటుannారా?"
+        }
     },
-    "Marathi": {
-        "initial": "ही तकलीफ तुम्हाला कधीपासून होत आहे?",
-        0: "हा दुखणे शरीराच्या इतर कोणत्या भागात जातो का?",
-        1: "याबरोबर ताप, उलटी किंवा अशक्तपणा असे काही त्रास आहे का?",
-        2: "यासाठी काही औषध घेतले का? कशामुळे आराम पडतो किंवा त्रास वाढतो?",
-        3: "तुम्हाला आधी काही आजार होता का? कुटुंबात कोणाला काही आजार आहे का? तुम्ही धूम्रपान किंवा दारू पिता का?",
-        4: "तुम्हाला कोणत्या औषधाची किंवा खाण्याच्या पदार्थाची ऍलर्जी आहे का?",
-        "default": "अजून काही सांगायचे आहे का?"
-    },
+    "general": {
+        "Hindi": {
+            "initial": "यह तकलीफ़ आपको कब से हो रही है?",
+            0: "क्या यह दर्द शरीर के किसी और हिस्से में भी जाता है?",
+            1: "इसके साथ और कोई तकलीफ़ है? जैसे बुखार, उल्टी, या कमज़ोरी?",
+            2: "क्या आपने इसके लिए कोई दवा ली है? किसी चीज़ से आराम मिलता है या तकलीफ़ बढ़ती है?",
+            3: "क्या आपको पहले कोई बीमारी रही है? परिवार में किसी को कोई बीमारी है? क्या आप धूम्रपान या शराब का सेवन करते हैं?",
+            4: "क्या आपको किसी दवा या खाने की चीज़ से एलर्जी है?",
+            "default": "और कुछ बताना चाहेंगे?"
+        },
+        "English": {
+            "initial": "How long have you been experiencing this problem?",
+            0: "Does this pain spread or travel to any other part of your body?",
+            1: "Are you experiencing any other symptoms like fever, nausea, or weakness?",
+            2: "Have you taken any medicine for this? Does anything make it better or worse?",
+            3: "Do you have any past medical conditions? Any diseases in your family? Do you smoke or drink alcohol?",
+            4: "Are you allergic to any medicines or foods?",
+            "default": "Is there anything else you would like to tell me?"
+        },
+        "Tamil": {
+            "initial": "இந்த பிரச்சனை எவ்வளவு நாளாக இருக்கிறது?",
+            0: "இந்த வலி உடலின் வேறு எந்த பகுதிக்கும் பரவுகிறதா?",
+            1: "இதனுடன் காய்ச்சல், குமட்டல் அல்லது பலவீனம் போன்ற வேறு ஏதாவது தொந்தரவு இருக்கிறதா?",
+            2: "இதற்கு ஏதாவது மருந்து எடுத்துக்கொண்டீர்களா? எதனால் சரியாகிறது அல்லது மோசமாகிறது?",
+            3: "உங்களுக்கு முன்பு ஏதாவது நோய் இருந்ததா? குடும்பத்தில் யாருக்காவது நோய் இருக்கிறதா? புகைபிடிப்பீர்களா அல்லது மது அருந்துவீர்களா?",
+            4: "உங்களுக்கு ஏதாவது மருந்து அல்லது உணவுக்கு ஒவ்வாமை இருக்கிறதா?",
+            "default": "வேறு ஏதாவது சொல்ல விரும்புகிறீர்களா?"
+        },
+        "Telugu": {
+            "initial": "ఈ సమస్య మీకు ఎంత కాలంగా ఉంది?",
+            0: "ఈ నొప్పి శరీరంలో ఇతర భాగాలకు వ్యాపిస్తుందా?",
+            1: "దీనితో పాటు జ్వరం, వాంతులు లేదా బలహీనత వంటి ఇతర సమస్యలు ఉన్నాయా?",
+            2: "దీని కోసం ఏదైనా మందు వాడారా? దేనివల్ల తగ్గుతుంది లేదా పెరుగుతుంది?",
+            3: "మీకు ఇంతకు ముందు ఏదైనా వ్యాధి ఉందా? కుటుంబంలో ఎవరికైనా వ్యాధి ఉందా? మీరు పొగ తాగుతారా లేదా మద్యం సేవిస్తారా?",
+            4: "మీకు ఏదైనా మందు లేదా ఆహారానికి అలర్జీ ఉందా?",
+            "default": "ఇంకా ఏమైనా చెప్పాలనుకుంటున్నారా?"
+        },
+        "Bengali": {
+            "initial": "এই সমস্যা আপনার কতদিন ধরে হচ্ছে?",
+            0: "এই ব্যথা কি শরীরের অন্য কোনো জায়গায় ছড়ায়?",
+            1: "এর সাথে জ্বর, বমি বা দুর্বলতার মতো অন্য কোনো সমস্যা আছে?",
+            2: "এর জন্য কি কোনো ওষুধ খেয়েছেন? কিসে আরাম হয় বা কষ্ট বাড়ে?",
+            3: "আগে কি কোনো রোগ ছিল? পরিবারে কারো কি কোনো রোগ আছে? আপনি কি ধূমপান বা মদ্যপান করেন?",
+            4: "আপনার কি কোনো ওষুধ বা খাবারে অ্যালার্জি আছে?",
+            "default": "আর কিছু বলতে চান?"
+        },
+        "Marathi": {
+            "initial": "ही तकलीफ तुम्हाला कधीपासून होत आहे?",
+            0: "हा दुखणे शरीराच्या इतर कोणत्या भागात जातो का?",
+            1: "याबरोबर ताप, उलटी किंवा अशक्तपणा असे काही त्रास आहे का?",
+            2: "यासाठी काही औषध घेतले का? कशामुळे आराम पडतो किंवा त्रास वाढतो?",
+            3: "तुम्हाला आधी काही आजार होता का? कुटुंबात कोणाला काही आजार आहे का? तुम्ही धूम्रपान किंवा दारू पिता का?",
+            4: "तुम्हाला कोणत्या औषधाची किंवा खाण्याच्या पदार्थाची ऍलर्जी आहे का?",
+            "default": "अजून काही सांगायचे आहे का?"
+        }
+    }
 }
 
-def get_phase_question(language: str, phase) -> str:
-    """Get a pre-written question template. Falls back to English if language not available."""
-    lang_questions = PHASE_QUESTIONS.get(language, PHASE_QUESTIONS.get("English", {}))
+def detect_symptom_category(transcript: str) -> str:
+    """Classifies patient transcript into targeted symptom tracks using multilingual keyword heuristics."""
+    if not transcript:
+        return "general"
+    t = transcript.lower()
+
+    # 1. Chest Pain & Cardiac / Respiratory
+    chest_keywords = [
+        "chest", "सीने", "छाती", "heart", "दिल", "सांस", "breath", "palpitation",
+        "घबराहट", "धड़कन", "angina", "cardiac", "நெஞ்சு", "மார்பு", "గుండె", "छातीत", "বুক"
+    ]
+    if any(k in t for k in chest_keywords):
+        return "chest_pain"
+
+    # 2. Stomach & GI / Abdominal
+    stomach_keywords = [
+        "stomach", "abdomen", "abdominal", "belly", "पेट", "pet", "vomit", "उल्टी",
+        "loose motion", "दस्त", "acidity", "gas", "गैस", "जलन", "constipation",
+        "कब्ज", "ulcer", "appetite", "भूख", "வயிறு", "కడుపు", "पोट", "পেট"
+    ]
+    if any(k in t for k in stomach_keywords):
+        return "stomach_pain"
+
+    # 3. Headache & Neurological / Dizziness
+    headache_keywords = [
+        "headache", "head pain", "head", "सिर", "सर", "migraine", "माइग्रेन",
+        "dizziness", "चक्कर", "faint", "बेहोश", "vision", "धुंधला", "stroke",
+        "தலைவலி", "తలనొప్పి", "डोकेदुखी", "মাথাব্যথা"
+    ]
+    if any(k in t for k in headache_keywords):
+        return "headache"
+
+    # 4. Fever & Infections / Chills
+    fever_keywords = [
+        "fever", "बुखार", "ताप", "chills", "ठंड", "shivering", "कंपकंपी",
+        "dengue", "डेंगू", "malaria", "मलेरिया", "typhoid", "टाइफाइड", "viral",
+        "காய்ச்சல்", "జ్వరం", "ताप", "জ্বর"
+    ]
+    if any(k in t for k in fever_keywords):
+        return "fever"
+
+    # 5. Joint, Orthopedic & Back Pain
+    joint_keywords = [
+        "joint", "जोड़", "knee", "घुटने", "back pain", "कमर", "spine", "रीढ़",
+        "bone", "हड्डी", "swelling", "सूजन", "arthritis", "गठिया", "fracture",
+        "stiffness", "जकड़न", "மூட்டு", "కీళ్ల", "सांधेदुखी", "গাঁটের ব্যথা"
+    ]
+    if any(k in t for k in joint_keywords):
+        return "joint_pain"
+
+    return "general"
+
+def get_phase_question(language: str, phase, category: str = "general") -> str:
+    """Get a pre-written question template tailored to language and symptom category."""
+    cat_dict = CATEGORY_QUESTIONS.get(category, CATEGORY_QUESTIONS.get("general", {}))
+    lang_questions = cat_dict.get(language, cat_dict.get("English", {}))
+    if not lang_questions:
+        gen_cat = CATEGORY_QUESTIONS.get("general", {})
+        lang_questions = gen_cat.get(language, gen_cat.get("English", {}))
     return lang_questions.get(phase, lang_questions.get("default", "Is there anything else you would like to tell me?"))
 
 # ── Pydantic Models ──
@@ -287,6 +535,7 @@ class PatientRecord(Base):
     personal_history = Column(String)
     allergies = Column(String)
     review_of_systems = Column(Text)
+    symptom_category = Column(String, default="general")
     clinical_impression_json = Column(Text, default="{}")
     prakriti = Column(String)
     vikriti = Column(String)
@@ -320,7 +569,7 @@ Base.metadata.create_all(bind=engine)
 try:
     with engine.connect() as conn:
         cols = [row[1] for row in conn.execute(text("PRAGMA table_info(patients)")).fetchall()]
-        for col_name, col_type in [("abha_id", "VARCHAR"), ("patient_name", "VARCHAR"), ("age", "VARCHAR"), ("gender", "VARCHAR"), ("phone", "VARCHAR"), ("raw_dialogue", "TEXT"), ("is_synthesized", "BOOLEAN"), ("abha_relevance_json", "TEXT"), ("clinical_impression_json", "TEXT")]:
+        for col_name, col_type in [("abha_id", "VARCHAR"), ("patient_name", "VARCHAR"), ("age", "VARCHAR"), ("gender", "VARCHAR"), ("phone", "VARCHAR"), ("symptom_category", "VARCHAR"), ("raw_dialogue", "TEXT"), ("is_synthesized", "BOOLEAN"), ("abha_relevance_json", "TEXT"), ("clinical_impression_json", "TEXT")]:
             if col_name not in cols:
                 conn.execute(text(f"ALTER TABLE patients ADD COLUMN {col_name} {col_type}"))
         conn.commit()
@@ -800,6 +1049,9 @@ def build_patient_from_transcript(transcript, language, is_ayush, pt_id, db, abh
         "सीने में दर्द", "हार्ट", "अटैक", "सांस", "बेहोश", "खून", "छातीत दुखणे", "గుండె", "நெஞ்சு வலி", "বুকের ব্যথা"
     ])
 
+    symptom_cat = detect_symptom_category(transcript)
+    print(f"🎯 Detected primary symptom track: '{symptom_cat}' for complaint: '{transcript}'")
+
     dialogue_entry = f"Patient (Chief Complaint - {language}): {transcript}\n"
 
     patient = PatientRecord(
@@ -810,6 +1062,7 @@ def build_patient_from_transcript(transcript, language, is_ayush, pt_id, db, abh
         age=str(age) if age else "",
         gender=str(gender) if gender else "",
         phone=str(phone) if phone else "",
+        symptom_category=symptom_cat,
         chief_complaint=transcript,
         hpi=f"Patient reports: {transcript}",
         is_emergency=is_emerg,
@@ -836,8 +1089,8 @@ def build_patient_from_transcript(transcript, language, is_ayush, pt_id, db, abh
     if abha_id and db is not None:
         seed_abha_history(abha_id, db)
 
-    # Use SOCRATES-framework question template
-    initial_question = get_phase_question(language, "initial")
+    # Use targeted SOCRATES-framework question template for the detected symptom track
+    initial_question = get_phase_question(language, "initial", category=symptom_cat)
     return patient, initial_question
 
 
@@ -1151,14 +1404,15 @@ def handle_followup_extraction(
         5: "Allergies"
     }
     phase_label = phase_names.get(follow_up_count, f"Phase {follow_up_count}")
-    prev_q = get_phase_question(language, follow_up_count - 1 if follow_up_count > 0 else "initial")
+    symptom_cat = patient.symptom_category or "general"
+    prev_q = get_phase_question(language, follow_up_count - 1 if follow_up_count > 0 else "initial", category=symptom_cat)
     dialogue_entry = f"Doctor ({phase_label}): {prev_q}\nPatient ({language}): {transcript}\n"
 
     current_dialogue = patient.raw_dialogue or ""
     patient.raw_dialogue = current_dialogue + dialogue_entry
 
     is_complete = True if follow_up_count >= 5 else False
-    next_question = get_phase_question(language, follow_up_count) if follow_up_count < 5 else "Thank you. Let us proceed to document scanning."
+    next_question = get_phase_question(language, follow_up_count, category=symptom_cat) if follow_up_count < 5 else "Thank you. Let us proceed to document scanning."
 
     # When the 5-question interview finishes, trigger full AI synthesis & ABHA filter in background
     if is_complete and background_tasks is not None:
