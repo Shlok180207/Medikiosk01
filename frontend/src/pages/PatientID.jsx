@@ -6,15 +6,15 @@ const API_BASE_URL = 'http://localhost:8000/api';
 
 export default function PatientID() {
   const navigate = useNavigate();
-  const { 
-    setPatient, 
-    demoAbhaPatients, 
-    language, 
-    setLanguage, 
-    languages, 
-    t 
+  const {
+    setPatient,
+    demoAbhaPatients,
+    language,
+    setLanguage,
+    languages,
+    t
   } = useApp();
-  
+
   const [abhaInput, setAbhaInput] = useState('');
   const [verifiedPatient, setVerifiedPatient] = useState(null);
   const [isVerifying, setIsVerifying] = useState(false);
@@ -96,10 +96,10 @@ export default function PatientID() {
   return (
     <div className="page-container animate-fade-in">
       <div className="page-content" style={{ maxWidth: 640 }}>
-        
+
         {/* Selected Language Display & Switcher Bar */}
-        <div 
-          className="card mb-5" 
+        <div
+          className="card mb-5"
           style={{
             display: 'flex',
             alignItems: 'center',
@@ -157,7 +157,7 @@ export default function PatientID() {
               <span style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--color-text)' }}>
                 🌐 {t('select_language_title')}
               </span>
-              <button 
+              <button
                 onClick={() => setShowLangModal(false)}
                 className="btn btn-ghost btn-sm"
                 style={{ padding: '2px 8px', fontSize: '0.85rem' }}
@@ -338,9 +338,6 @@ export default function PatientID() {
 
             {/* Subtle Demo ABHA helper */}
             <div style={{ marginTop: 'var(--space-4)', paddingTop: 'var(--space-3)', borderTop: '1px solid var(--color-border-light)' }}>
-              <span className="caption" style={{ display: 'block', marginBottom: 'var(--space-2)', fontWeight: 600 }}>
-                {t('quick_demo_fill')}
-              </span>
               <div className="flex flex-wrap gap-2">
                 {demoAbhaPatients?.map((p, idx) => (
                   <button

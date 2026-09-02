@@ -101,8 +101,24 @@ export function AppProvider({ children }) {
     } catch (e) {}
   }, []);
 
-  // Patient identity
-  const [patient, setPatient] = useState(null);
+  // Patient identity (persisted in sessionStorage across refreshes)
+  const [patient, setPatientState] = useState(() => {
+    try {
+      const saved = sessionStorage.getItem('medikiosk_patient');
+      return saved ? JSON.parse(saved) : null;
+    } catch (e) {
+      return null;
+    }
+  });
+
+  const setPatient = useCallback((val) => {
+    setPatientState(val);
+    try {
+      if (val) sessionStorage.setItem('medikiosk_patient', JSON.stringify(val));
+      else sessionStorage.removeItem('medikiosk_patient');
+    } catch (e) {}
+  }, []);
+
   const [patientId, setPatientId] = useState(null); // backend-assigned PT-XXXX
 
   // Consent
@@ -129,13 +145,16 @@ export function AppProvider({ children }) {
     setRedFlags(null);
     setSpecialty(null);
     setSelectedProvider(null);
-  }, []);
+    try {
+      sessionStorage.removeItem('medikiosk_patient');
+    } catch (e) {}
+  }, [setPatient]);
 
   // Load demo patient (default Ramesh Sharma)
   const loadDemoPatient = useCallback((index = 0) => {
     const selected = DEMO_ABHA_PATIENTS[index] || DEMO_ABHA_PATIENTS[0];
     setPatient(selected);
-  }, []);
+  }, [setPatient]);
 
   // Select specific ABHA patient
   const selectAbhaPatient = useCallback((patientObj) => {

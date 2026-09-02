@@ -50,7 +50,7 @@ export default function DocumentScan() {
 
   const handleSkip = () => {
     triggerFinalizeIntake();
-    navigate('/red-flag');
+    navigate('/specialty');
   };
 
   const handleContinue = () => {
@@ -59,7 +59,7 @@ export default function DocumentScan() {
 
   const handleDone = () => {
     triggerFinalizeIntake();
-    navigate('/red-flag');
+    navigate('/specialty');
   };
 
   return (

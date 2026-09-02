@@ -1,33 +1,103 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '../context/AppContext';
 
+const API_BASE_URL = 'http://localhost:8000/api';
+
 export default function Consent() {
   const navigate = useNavigate();
-  const { setConsentGiven, languageLabel, t } = useApp();
+  const { setConsentGiven, languageLabel, speechCode, t } = useApp();
   const [showPrivacy, setShowPrivacy] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
+  const audioRef = useRef(null);
+
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, []);
 
   const handleAgree = () => {
+    if (audioRef.current) audioRef.current.pause();
+    if ('speechSynthesis' in window) window.speechSynthesis.cancel();
     setConsentGiven(true);
     navigate('/clinical-mode');
   };
 
   const handleDisagree = () => {
+    if (audioRef.current) audioRef.current.pause();
+    if ('speechSynthesis' in window) window.speechSynthesis.cancel();
     navigate('/');
   };
 
   const playConsent = () => {
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(
-        'MediKiosk will collect information about your current health concern and previous medical records to prepare your history for the healthcare professional. Your information will be shared only with your assigned healthcare provider. You can withdraw consent at any time.'
-      );
-      utterance.lang = 'en-IN';
-      utterance.rate = 0.85;
-      utterance.onstart = () => setIsPlaying(true);
-      utterance.onend = () => setIsPlaying(false);
-      window.speechSynthesis.speak(utterance);
+    if (isPlaying) {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+      }
+      setIsPlaying(false);
+      return;
+    }
+
+    const consentSpeechText = `${t('consent_info_1')}${t('consent_info_2')}${t('consent_info_3')}${t('consent_info_4')}${t('consent_info_5')} ${t('why_we_collect')}: ${t('why_we_collect_desc')}. ${t('who_can_access')}: ${t('who_can_access_desc')}.`;
+
+    try {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current = null;
+      }
+      const lang = languageLabel || 'Hindi';
+      const encoded = encodeURIComponent(consentSpeechText);
+      const audio = new Audio(`${API_BASE_URL}/tts?text=${encoded}&lang=${lang}`);
+      audioRef.current = audio;
+
+      setIsPlaying(true);
+      audio.onended = () => setIsPlaying(false);
+      audio.onerror = () => {
+        // Fallback to Web Speech API in native speech code
+        if ('speechSynthesis' in window) {
+          window.speechSynthesis.cancel();
+          const utterance = new SpeechSynthesisUtterance(consentSpeechText);
+          utterance.lang = speechCode || 'hi-IN';
+          utterance.rate = 0.88;
+          utterance.onstart = () => setIsPlaying(true);
+          utterance.onend = () => setIsPlaying(false);
+          utterance.onerror = () => setIsPlaying(false);
+          window.speechSynthesis.speak(utterance);
+        } else {
+          setIsPlaying(false);
+        }
+      };
+
+      const playPromise = audio.play();
+      if (playPromise !== undefined) {
+        playPromise.catch(() => {
+          if ('speechSynthesis' in window) {
+            window.speechSynthesis.cancel();
+            const utterance = new SpeechSynthesisUtterance(consentSpeechText);
+            utterance.lang = speechCode || 'hi-IN';
+            utterance.rate = 0.88;
+            utterance.onstart = () => setIsPlaying(true);
+            utterance.onend = () => setIsPlaying(false);
+            utterance.onerror = () => setIsPlaying(false);
+            window.speechSynthesis.speak(utterance);
+          } else {
+            setIsPlaying(false);
+          }
+        });
+      }
+    } catch (e) {
+      setIsPlaying(false);
     }
   };
 

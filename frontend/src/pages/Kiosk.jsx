@@ -77,6 +77,14 @@ export default function Kiosk() {
     };
   }, [languageLabel, speakText]);
 
+  // Guard: Redirect to ABHA verification if no patient is authenticated
+  useEffect(() => {
+    if (!patient || !patient.name) {
+      console.warn('No authenticated ABHA patient found. Redirecting to /patient-id...');
+      navigate('/patient-id');
+    }
+  }, [patient, navigate]);
+
   // Chat state
   const [messages, setMessages] = useState([
     { type: 'bot', text: getGreeting(languageLabel) }
@@ -199,7 +207,7 @@ export default function Kiosk() {
       const data = await response.json();
       if (data.patient_id) {
         setPatientId(data.patient_id);
-        setTimeout(() => navigate('/red-flag'), 1000);
+        setTimeout(() => navigate('/specialty'), 1000);
       }
     } catch (error) {
       console.error(error);
@@ -259,16 +267,11 @@ export default function Kiosk() {
   const handleInitialResponse = (data) => {
     if (data.patient_id) setPatientId(data.patient_id);
     removeLastBotMessage();
-    addMessage(data.bot_response || 'Thank you. Let me ask a few follow-up questions.', 'bot');
+    const q = data.next_question || getFirstFollowUp(languageLabel);
+    addMessage(q, 'bot');
     setConversationPhase('follow-up');
-    setConversationContext(`Initial complaint: ${data.extracted_complaint}`);
+    setConversationContext(`Initial complaint: ${data.extracted_complaint}\nBot: ${q}`);
     setProgress(30);
-    // Ask first follow-up
-    setTimeout(() => {
-      const q = data.next_question || getFirstFollowUp(languageLabel);
-      addMessage(q, 'bot');
-      setConversationContext(prev => prev + `\nBot: ${q}`);
-    }, 800);
   };
 
   const sendFollowUpAudio = async (audioBlob) => {

@@ -292,7 +292,7 @@ CATEGORY_QUESTIONS = {
             2: "విశ్రాంతి లేదా వేడి కాపడం వల్ల నొప్పి తగ్గుతుందా?",
             3: "మీకు ఆర్థరైటిస్, యూరిక్ యాసిడ్ లేదా ఎముకల బలహీనత సమస్యలు ఉన్నాయా?",
             4: "మీకు పెయిన్‌కిల్లర్ మందులకు అలర్జీ ఉందా?",
-            "default": "ఇంకా ఏమైనా చెప్పాలనుకుంటుannారా?"
+            "default": "ఇంకా ఏమైనా చెప్పాలనుకుంటున్నారా?"
         }
     },
     "general": {
@@ -335,7 +335,7 @@ CATEGORY_QUESTIONS = {
         "Bengali": {
             "initial": "এই সমস্যা আপনার কতদিন ধরে হচ্ছে?",
             0: "এই ব্যথা কি শরীরের অন্য কোনো জায়গায় ছড়ায়?",
-            1: "এর সাথে জ্বর, বমি বা দুর্বলতার মতো অন্য কোনো সমস্যা আছে?",
+            1: "এর সাথে জ্বর, বমি বা দুর্বলতার মতো অন্য কোনো समस्या আছে?",
             2: "এর জন্য কি কোনো ওষুধ খেয়েছেন? কিসে আরাম হয় বা কষ্ট বাড়ে?",
             3: "আগে কি কোনো রোগ ছিল? পরিবারে কারো কি কোনো রোগ আছে? আপনি কি ধূমপান বা মদ্যপান করেন?",
             4: "আপনার কি কোনো ওষুধ বা খাবারে অ্যালার্জি আছে?",
@@ -354,32 +354,33 @@ CATEGORY_QUESTIONS = {
 }
 
 def detect_symptom_category(transcript: str) -> str:
-    """Classifies patient transcript into targeted symptom tracks using multilingual keyword heuristics."""
+    """Classifies patient transcript into targeted symptom tracks using multilingual + Hinglish keyword heuristics."""
     if not transcript:
         return "general"
     t = transcript.lower()
 
     # 1. Chest Pain & Cardiac / Respiratory
     chest_keywords = [
-        "chest", "सीने", "छाती", "heart", "दिल", "सांस", "breath", "palpitation",
-        "घबराहट", "धड़कन", "angina", "cardiac", "நெஞ்சு", "மார்பு", "గుండె", "छातीत", "বুক"
+        "chest", "सीने", "सीना", "छाती", "दिल", "सांस", "breath", "palpitation",
+        "घबराहट", "धड़कन", "angina", "cardiac", "seene", "seena", "chhati", "chati",
+        "dil", "saans", "sans", "ghabrahat", "dhadkan", "நெஞ்சு", "மார்பு", "గుండె", "छातीत", "বুক"
     ]
     if any(k in t for k in chest_keywords):
         return "chest_pain"
 
     # 2. Stomach & GI / Abdominal
     stomach_keywords = [
-        "stomach", "abdomen", "abdominal", "belly", "पेट", "pet", "vomit", "उल्टी",
-        "loose motion", "दस्त", "acidity", "gas", "गैस", "जलन", "constipation",
-        "कब्ज", "ulcer", "appetite", "भूख", "வயிறு", "కడుపు", "पोट", "পেট"
+        "stomach", "abdomen", "abdominal", "belly", "पेट", "pet", "pait", "vomit", "उल्टी",
+        "ulti", "loose motion", "दस्त", "dast", "acidity", "gas", "गैस", "जलन", "jalan",
+        "constipation", "कब्ज", "kabz", "ulcer", "appetite", "भूख", "bhook", "வயிறு", "కడుపు", "पोट", "পেট"
     ]
     if any(k in t for k in stomach_keywords):
         return "stomach_pain"
 
     # 3. Headache & Neurological / Dizziness
     headache_keywords = [
-        "headache", "head pain", "head", "सिर", "सर", "migraine", "माइग्रेन",
-        "dizziness", "चक्कर", "faint", "बेहोश", "vision", "धुंधला", "stroke",
+        "headache", "head pain", "head", "सिर", "सर", "sir", "sar", "migraine", "माइग्रेन",
+        "dizziness", "चक्कर", "chakkar", "faint", "बेहोश", "behosh", "vision", "धुंधला", "stroke",
         "தலைவலி", "తలనొప్పి", "डोकेदुखी", "মাথাব্যথা"
     ]
     if any(k in t for k in headache_keywords):
@@ -387,18 +388,18 @@ def detect_symptom_category(transcript: str) -> str:
 
     # 4. Fever & Infections / Chills
     fever_keywords = [
-        "fever", "बुखार", "ताप", "chills", "ठंड", "shivering", "कंपकंपी",
-        "dengue", "डेंगू", "malaria", "मलेरिया", "typhoid", "टाइफाइड", "viral",
-        "காய்ச்சல்", "జ్వరం", "ताप", "জ্বর"
+        "fever", "बुखार", "ताप", "bukhar", "taap", "chills", "ठंड", "thand", "shivering", "कंपकंपी",
+        "kampkampi", "dengue", "डेंगू", "malaria", "मलेरिया", "typhoid", "टाइफाइड", "viral",
+        "காய்ச்சல்", "జ్వరం", "জ্বর"
     ]
     if any(k in t for k in fever_keywords):
         return "fever"
 
     # 5. Joint, Orthopedic & Back Pain
     joint_keywords = [
-        "joint", "जोड़", "knee", "घुटने", "back pain", "कमर", "spine", "रीढ़",
-        "bone", "हड्डी", "swelling", "सूजन", "arthritis", "गठिया", "fracture",
-        "stiffness", "जकड़न", "மூட்டு", "కీళ్ల", "सांधेदुखी", "গাঁটের ব্যথা"
+        "joint", "जोड़", "jod", "jodon", "knee", "घुटने", "ghutne", "ghutna", "back pain", "कमर", "kamar",
+        "spine", "रीढ़", "bone", "हड्डी", "haddi", "swelling", "सूजन", "sujan", "arthritis", "गठिया", "gathiya",
+        "fracture", "stiffness", "जकड़न", "jakdan", "மூட்டு", "కీళ్ల", "సాంధేదుఖీ", "গাঁটের ব্যথা"
     ]
     if any(k in t for k in joint_keywords):
         return "joint_pain"
@@ -1670,24 +1671,41 @@ async def red_flag_check(patient_id: str, db: Session = Depends(get_db)):
     if not patient:
         return {"has_red_flags": False, "flags": [], "message": "Patient not found"}
 
-    prompt = f"""You are a medical triage safety system. Based on the patient's reported symptoms, identify any RED FLAG symptoms that may require urgent clinical assessment.
+    # Fast-Path: Zero-latency check using recorded clinical indicators
+    text_to_check = f"{patient.chief_complaint or ''} {patient.hpi or ''}".lower()
+    
+    red_flag_terms = [
+        ("chest pain", "Severe substernal chest discomfort"),
+        ("सीने में दर्द", "सीने में तेज दर्द / दिल का दौरा"),
+        ("heart attack", "Suspected acute coronary syndrome"),
+        ("radiat", "Pain radiating to left arm/jaw"),
+        ("breath", "Severe respiratory distress / shortness of breath"),
+        ("सांस", "सांस लेने में अत्यधिक तकलीफ़"),
+        ("unconscious", "Loss of consciousness or syncope"),
+        ("बेहोश", "बेहोशी या चक्कर आना"),
+        ("seizure", "Active seizures or neurological episode"),
+        ("stroke", "Acute stroke symptoms / weakness on one side"),
+        ("heavy bleeding", "Severe hemorrhage or acute blood loss"),
+        ("खून", "अत्यधिक रक्तस्राव / खून की उल्टी"),
+    ]
 
-Chief Complaint: {patient.chief_complaint}
-HPI: {patient.hpi}
-Severity: {patient.severity}
+    matched_flags = []
+    for term, label in red_flag_terms:
+        if term in text_to_check:
+            matched_flags.append(label)
 
-Respond with JSON:
-{{"has_red_flags": true/false, "flags": ["list of concerning symptoms"], "message": "brief explanation"}}
+    if patient.is_emergency or len(matched_flags) > 0:
+        return {
+            "has_red_flags": True,
+            "flags": matched_flags if matched_flags else ["High-acuity symptoms requiring urgent triage assessment"],
+            "message": "Potential urgent red-flag condition detected. Immediate clinical assessment recommended."
+        }
 
-IMPORTANT: Do NOT diagnose. Only flag potentially urgent symptoms. Be conservative — flag if uncertain."""
-
-    try:
-        response_text = call_llm(prompt)
-        result = json.loads(extract_json_string(response_text))
-        result = unwrap_json(result)
-        return result
-    except:
-        return {"has_red_flags": False, "flags": [], "message": "Safety check completed — no urgent flags detected."}
+    return {
+        "has_red_flags": False,
+        "flags": [],
+        "message": "Safety check completed — no urgent flags detected."
+    }
 
 
 # ── Specialty Matching ──
@@ -1697,25 +1715,51 @@ async def specialty_match(patient_id: str, language: str = "English", db: Sessio
     if not patient:
         return {"specialty": "General Medicine", "reason": "Default", "confidence": "Low"}
 
-    prompt = f"""Based on the patient's reported symptoms, suggest the most appropriate medical specialty.
+    if patient.is_ayush:
+        return {
+            "specialty": "AYUSH Medicine",
+            "reason": "Holistic Ayurvedic & Traditional Medicine OPD",
+            "confidence": "High"
+        }
 
-Chief Complaint: {patient.chief_complaint}
-HPI: {patient.hpi}
+    cat = patient.symptom_category or detect_symptom_category(f"{patient.chief_complaint or ''} {patient.hpi or ''}")
+    
+    specialty_map = {
+        "chest_pain": {
+            "specialty": "Cardiology",
+            "reason": "Evaluation of acute chest discomfort and cardiovascular parameters",
+            "confidence": "High"
+        },
+        "stomach_pain": {
+            "specialty": "Gastroenterology",
+            "reason": "Assessment of abdominal, gastrointestinal, or digestive symptoms",
+            "confidence": "High"
+        },
+        "headache": {
+            "specialty": "Neurology",
+            "reason": "Cranial, neurological, and migraine evaluation",
+            "confidence": "High"
+        },
+        "fever": {
+            "specialty": "General Medicine",
+            "reason": "Acute febrile illness, infectious disease, and vitals assessment",
+            "confidence": "High"
+        },
+        "joint_pain": {
+            "specialty": "Orthopedics",
+            "reason": "Musculoskeletal, bone, and joint examination",
+            "confidence": "High"
+        }
+    }
 
-Respond with JSON:
-{{"specialty": "Specialty name in {language}", "reason": "Brief explanation in {language}", "confidence": "Low|Medium|High"}}
+    if cat in specialty_map:
+        return specialty_map[cat]
 
-Common specialties: General Medicine, Cardiology, Pulmonology, Gastroenterology, Neurology, Orthopedics, Dermatology, ENT, Ophthalmology, Psychiatry, Obstetrics & Gynecology, Pediatrics, Urology, Surgery.
-
-IMPORTANT: The JSON keys must remain in English, but the VALUES for 'specialty' and 'reason' MUST be accurately translated into {language}. Do NOT diagnose. Only suggest which specialty is most appropriate for the described symptoms."""
-
-    try:
-        response_text = call_llm(prompt)
-        result = json.loads(extract_json_string(response_text))
-        result = unwrap_json(result)
-        return result
-    except:
-        return {"specialty": "General Medicine", "reason": "Default recommendation", "confidence": "Medium"}
+    return {
+        "specialty": "General Medicine",
+        "reason": "Primary comprehensive medical consultation",
+        "confidence": "Medium"
+    }
 
 
 # ── Patient Queue ──
