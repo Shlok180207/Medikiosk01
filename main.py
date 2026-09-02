@@ -29,8 +29,6 @@ load_dotenv()
 
 # ── Offline AI Models ──
 import ollama
-import torch
-from transformers import pipeline
 
 OLLAMA_MODEL = "qwen2.5:7b"
 FALLBACK_MODEL = "qwen2.5:7b"
@@ -171,15 +169,36 @@ def get_phase_question(language: str, phase) -> str:
 # ── Pydantic Models ──
 PATIENT_JSON_TEMPLATE = """{
   "chief_complaint": "Main presenting symptom (translated to clinical English)",
-  "hpi": "Comprehensive narrative of present illness, onset, radiation, severity, associated symptoms, and relieving factors (in English)",
+  "hpi": "Chronological narrative of the CURRENT presenting complaint ONLY: onset, duration, character, radiation, severity, aggravating/relieving factors. STRICTLY EXCLUDE past history, family history, lifestyle/habits, allergies, and general systemic symptom denials.",
   "is_emergency": false,
   "severity": "Low|Medium|High",
   "duration": "Symptom duration (e.g. '2 days')",
-  "past_medical_history": "Past conditions (or 'Uncertain / unconfirmed (patient does not recall)' if unsure, or 'Patient denies past chronic medical illness' if denied)",
-  "family_history": "Family history (or 'Patient denies family history of similar illness' if denied, or 'Uncertain' if unsure)",
-  "personal_history": "Smoking, alcohol, diet, habits (or 'No significant lifestyle risks reported')",
-  "allergies": "Drug/food allergies (or 'No known drug allergies (NKDA)' if denied)",
-  "review_of_systems": "Summary of systemic positive and negative findings (e.g. 'Patient reports diaphoresis and anxiety; denies fever, vomiting, or dyspnea')",
+  "past_medical_history": "Past medical conditions (or 'Uncertain / unconfirmed (patient does not recall)' if unsure, or 'Patient denies past chronic medical conditions / No significant past medical history' if denied)",
+  "family_history": "Family history (or 'Patient denies family history of similar complaints / No significant family history' if denied, or 'Uncertain / unconfirmed' if unsure)",
+  "personal_history": "Smoking, alcohol, diet, habits (or 'No significant lifestyle or habit risks reported')",
+  "allergies": "Drug/food allergies (or 'No known drug or food allergies (NKDA)' if denied)",
+  "review_of_systems": "Summary of systemic positive and negative symptoms (e.g. 'Patient reports diaphoresis; denies fever or vomiting')",
+  "clinical_impression": {
+    "clinical_synthesis": [
+      "Key acute symptoms, duration, and anatomical localization reported today",
+      "Corroborating objective findings from today's uploaded reports/labs (or 'No acute lab flags reported')",
+      "Historical ABHA risk context and underlying clinical etiology rationale"
+    ],
+    "probable_diagnoses": [
+      {
+        "condition": "Primary Suspected Condition Name",
+        "likelihood": "High|Medium|Low",
+        "supporting_evidence": "Clinical rationale tying together symptoms, lab values, and past history."
+      }
+    ],
+    "suggested_investigations": [
+      "Key diagnostic test or scan 1",
+      "Key diagnostic test or scan 2"
+    ],
+    "critical_rule_outs": [
+      "Critical high-risk condition to actively rule out"
+    ]
+  },
   "prakriti": "Not assessed",
   "vikriti": "Not assessed",
   "agni": "Not assessed",
@@ -222,6 +241,7 @@ class PatientExtraction(BaseModel):
     personal_history: Optional[str] = "None reported"
     allergies: Optional[str] = "None reported"
     review_of_systems: Optional[str] = "None reported"
+    clinical_impression: Optional[dict] = None
     prakriti: Optional[str] = "Not assessed"
     vikriti: Optional[str] = "Not assessed"
     agni: Optional[str] = "Not assessed"
@@ -267,6 +287,7 @@ class PatientRecord(Base):
     personal_history = Column(String)
     allergies = Column(String)
     review_of_systems = Column(Text)
+    clinical_impression_json = Column(Text, default="{}")
     prakriti = Column(String)
     vikriti = Column(String)
     agni = Column(String)
@@ -299,7 +320,7 @@ Base.metadata.create_all(bind=engine)
 try:
     with engine.connect() as conn:
         cols = [row[1] for row in conn.execute(text("PRAGMA table_info(patients)")).fetchall()]
-        for col_name, col_type in [("abha_id", "VARCHAR"), ("patient_name", "VARCHAR"), ("age", "VARCHAR"), ("gender", "VARCHAR"), ("phone", "VARCHAR"), ("raw_dialogue", "TEXT"), ("is_synthesized", "BOOLEAN"), ("abha_relevance_json", "TEXT")]:
+        for col_name, col_type in [("abha_id", "VARCHAR"), ("patient_name", "VARCHAR"), ("age", "VARCHAR"), ("gender", "VARCHAR"), ("phone", "VARCHAR"), ("raw_dialogue", "TEXT"), ("is_synthesized", "BOOLEAN"), ("abha_relevance_json", "TEXT"), ("clinical_impression_json", "TEXT")]:
             if col_name not in cols:
                 conn.execute(text(f"ALTER TABLE patients ADD COLUMN {col_name} {col_type}"))
         conn.commit()
@@ -720,6 +741,57 @@ def is_denial_response(text: str) -> bool:
     return any(t == p or t.startswith(p + " ") or t.endswith(" " + p) for p in DENIAL_PATTERNS)
 
 
+# ── Clinical HPI Cleaner (Eliminates Cross-Section Redundancy) ──
+def clean_hpi_text(hpi: str) -> str:
+    """
+    Cleans History of Present Illness (HPI) text by removing sentences that mistakenly 
+    duplicate or bundle Past Medical History, Family History, Allergies, Personal/Lifestyle History, 
+    or general Review of Systems denials.
+    """
+    if not hpi or not isinstance(hpi, str) or not hpi.strip():
+        return hpi
+
+    patterns = [
+        # Past medical history mentions / denials
+        r'\b(?:past\s+(?:chronic\s+)?medical\s+(?:history|conditions?|illness|issues?)|past\s+medical|past\s+surgical|past\s+illness)\b',
+        r'\b(?:denies\s+(?:any\s+)?past\s+(?:chronic\s+)?(?:medical|illness|conditions?))\b',
+        r'\b(?:no\s+significant\s+past\s+medical)\b',
+        r'\b(?:reports?\s+no\s+past\s+(?:medical|chronic))\b',
+        # Family history mentions / denials
+        r'\b(?:family\s+history|hereditary\s+conditions?|family\s+members?\s+(?:have|had))\b',
+        r'\b(?:denies\s+(?:any\s+)?(?:significant\s+)?family\s+history)\b',
+        r'\b(?:no\s+significant\s+family\s+history)\b',
+        # Allergies mentions / denials
+        r'\b(?:drug\s+or\s+food\s+allergies|known\s+drug|food\s+allergies|allergic\s+to\s+(?:any\s+)?(?:medication|food|drugs?)|allergies\b|nkda\b)',
+        r'\b(?:denies\s+(?:any\s+)?(?:known\s+)?(?:drug|food\s+)?allergies)\b',
+        r'\b(?:no\s+known\s+(?:drug|food\s+)?allergies)\b',
+        # Personal / Lifestyle mentions / denials
+        r'\b(?:lifestyle\s+or\s+habit|lifestyle\s+risks?|habit\s+risks?|smoking\s+(?:or|and)\s+alcohol|tobacco|substance\s+use)\b',
+        r'\b(?:denies\s+(?:any\s+)?significant\s+lifestyle)\b',
+        r'\b(?:no\s+significant\s+lifestyle)\b',
+        # Systemic ROS checklist denials
+        r'\b(?:associated\s+systemic\s+symptoms|denies\s+(?:any\s+)?associated\s+systemic|review\s+of\s+systems)\b',
+    ]
+    filter_re = re.compile('|'.join(patterns), re.IGNORECASE)
+
+    cleaned_lines = []
+    for line in hpi.splitlines():
+        line_str = line.strip()
+        if not line_str:
+            continue
+        
+        if filter_re.search(line_str):
+            sentences = re.split(r'(?<=[.!?])\s+', line_str)
+            valid_sentences = [s.strip() for s in sentences if s.strip() and not filter_re.search(s)]
+            if valid_sentences:
+                cleaned_lines.append(" ".join(valid_sentences))
+        else:
+            cleaned_lines.append(line_str)
+
+    cleaned_result = "\n".join(cleaned_lines).strip()
+    return cleaned_result if cleaned_result else hpi
+
+
 # ── Instant Patient Builder (0ms LLM Overhead) ──
 def build_patient_from_transcript(transcript, language, is_ayush, pt_id, db, abha_id=None, patient_name="Patient", age="", gender="", phone=""):
     t_lower = transcript.lower()
@@ -785,58 +857,90 @@ def synthesize_and_filter_patient_background(patient_id_db: int, abha_id: Option
             "The setting is standard Allopathic. Set prakriti, vikriti, agni to 'Not assessed'."
         )
 
-        docs_summary_str = ""
+        # Tier 1: Patient's Today's Spoken Input (Primary Clinical Anchor)
+        tier1_str = f"=== TIER 1: PATIENT'S TODAY'S SPOKEN INTAKE (PRIMARY CLINICAL ANCHOR) ===\n{full_transcript}"
+
+        # Tier 2: Currently Uploaded Documents & Lab Reports (Immediate Objective Corroboration)
+        tier2_str = "=== TIER 2: CURRENTLY UPLOADED MEDICAL DOCUMENTS & LAB REPORTS ===\n(No documents uploaded today)"
         if patient.flagged_lab_values and patient.flagged_lab_values != "[]":
             try:
                 docs_list = json.loads(patient.flagged_lab_values)
                 if isinstance(docs_list, list) and len(docs_list) > 0:
-                    docs_summary_str = "\n\nUploaded Clinical Documents / Lab Reports:\n"
+                    tier2_str = "=== TIER 2: CURRENTLY UPLOADED MEDICAL DOCUMENTS & LAB REPORTS (IMMEDIATE CORROBORATION) ===\n"
                     for idx, d in enumerate(docs_list, 1):
                         if isinstance(d, dict):
-                            docs_summary_str += f"- Doc #{idx} ({d.get('document_type', 'Report')} - Date: {d.get('document_date', 'Unknown')}): Summary: {d.get('summary', '')}, Diagnoses: {d.get('diagnoses', [])}, Meds: {d.get('medications', [])}, Flagged Labs: {d.get('flagged_values', [])}\n"
+                            tier2_str += f"- Document #{idx} ({d.get('document_type', 'Report')} - Date: {d.get('document_date', 'Unknown')}): Summary: {d.get('summary', '')}, Diagnoses: {d.get('diagnoses', [])}, Meds: {d.get('medications', [])}, Flagged Labs: {d.get('flagged_values', [])}\n"
             except Exception as e:
                 print(f"Error parsing docs for synthesis: {e}")
 
-        prompt = f"""You are an expert Chief Medical Officer and AI Clinical Scribe.
-Review the complete patient consultation dialogue and all uploaded medical documents below.
+        # Tier 3: Verified Past ABHA Historical Records (Background Context & Risk Filter)
+        tier3_str = "=== TIER 3: VERIFIED PAST ABHA MEDICAL HISTORY (BACKGROUND CONTEXT ONLY) ===\n(No past ABHA records on file)"
+        if abha_id:
+            try:
+                past_visits = db.query(VisitHistory).filter(VisitHistory.abha_id == abha_id).all()
+                if past_visits:
+                    tier3_str = "=== TIER 3: VERIFIED PAST ABHA MEDICAL HISTORY (BACKGROUND CONTEXT ONLY) ===\n"
+                    for idx, v in enumerate(past_visits, 1):
+                        tier3_str += f"- Historical Visit #{idx} ({v.visit_date} - {v.specialty}): Chief Complaint: {v.chief_complaint}, Diagnoses: {v.diagnoses}, Meds: {v.medications}, Flags: {v.flagged_values}, Summary: {v.summary}\n"
+            except Exception as e:
+                print(f"Error loading ABHA history for synthesis: {e}")
+
+        prompt = f"""You are an expert Chief Medical Officer and AI Clinical Decision Support Specialist.
+Review the patient's data below following a strict 3-tier clinical diagnostic reasoning hierarchy:
 
 Language spoken: {language}
 {ayush_inst}
 
-Complete Consultation Dialogue:
-{full_transcript}
-{docs_summary_str}
+{tier1_str}
 
-TASK: Perform high-precision clinical synthesis into a standard medical English EHR record.
+{tier2_str}
 
-CRITICAL RULES FOR CLINICAL ACCURACY:
-1. ACCURATELY DISTINGUISH DENIAL ("NO") VS UNCERTAINTY ("NOT SURE / DON'T REMEMBER") VS NOT ASKED:
-   - When the patient clearly DENIES or says "No" / "नहीं" / "कुछ नहीं" / "नहीं है":
-     * family_history: Write "Patient denies family history of similar complaints / No significant family history". NEVER write "Not reported" when the patient explicitly denied it!
-     * past_medical_history: Write "Patient denies past chronic medical conditions / No significant past medical history".
-     * allergies: Write "No known drug or food allergies (NKDA)".
-     * personal_history: Write "No significant lifestyle or habit risks reported".
-   - When the patient expresses UNCERTAINTY or LACK OF MEMORY (e.g., "yaad nahi", "confirm nahi", "pata nahi", "not sure", "don't remember", "uncertain"):
-     * Record clearly as "Uncertain / unconfirmed (patient does not recall / unsure)". DO NOT write "No" or "Denies"!
-   - When a category was NOT asked in dialogue or documents:
-     * Record as "Not assessed".
+{tier3_str}
 
-2. REVIEW OF SYSTEMS (ROS):
-   - Actively summarize all associated systemic symptoms asked or reported during the interview (e.g. "Patient denies fever, vomiting, or dyspnea; reports diaphoresis and nausea" or "Patient denies associated systemic symptoms"). DO NOT leave empty or as "None reported".
+TASK: Perform high-precision clinical synthesis and generate Clinical Decision Support (CDSS) insights into a standard medical EHR record.
 
-3. INTEGRATE UPLOADED DOCUMENTS & LAB REPORTS:
-   - If uploaded documents/reports are present above, integrate their diagnoses, lab flags, and findings into HPI, past history, and review of systems.
+CRITICAL CLINICAL REASONING ORDER FOR PROBABLE DIAGNOSES (CDSS):
+You MUST follow this exact sequential diagnostic reasoning flow:
+1. STEP 1 — ANCHOR ON PATIENT'S CURRENT PRESENTATION (TIER 1):
+   - The primary suspected condition MUST be anchored strictly to the patient's active complaints, onset, location, character, and systemic symptoms reported TODAY.
+2. STEP 2 — CORROBORATE WITH CURRENTLY UPLOADED DOCUMENTS (TIER 2):
+   - Cross-examine Tier 1 symptoms against today's scanned blood tests, ECGs, or imaging flags to confirm or refine the acute diagnosis.
+3. STEP 3 — FILTER BACKGROUND CONTEXT FROM PAST ABHA HISTORY (TIER 3):
+   - Check historical ABHA visits ONLY to identify relevant risk factors, past recurrent conditions, or chronic co-morbidities (e.g. past CAD stenting when presenting with chest pain).
+   - STRICT WARNING: NEVER allow unrelated past history (e.g. past ankle sprain or cataract) to override or misguide today's acute diagnosis when today's symptoms represent a different organ system!
+4. STEP 4 — FORMULATE DIFFERENTIAL DIAGNOSES:
+   - Generate top 2-3 differential diagnoses reflecting this exact priority order. Each diagnosis must clearly state its likelihood ("High"|"Medium"|"Low") and supporting evidence linking Tier 1 -> Tier 2 -> Tier 3.
 
-4. EMERGENCY TRIAGE & SEVERITY:
+SECTION SPECIFIC RULES:
+1. HISTORY OF PRESENT ILLNESS (HPI) — STRICT BOUNDARIES:
+   - `hpi` MUST ONLY describe the chronology of the CURRENT presenting complaint (onset, duration, anatomical site, character, severity, progression, aggravating/relieving factors).
+   - STRICT PROHIBITION: DO NOT mention past medical history, family history, lifestyle/personal habits, allergies, or general review-of-systems denials in the `hpi` field. Each belongs ONLY in its dedicated section.
+
+2. ACCURATELY DISTINGUISH DENIAL ("NO") VS UNCERTAINTY ("NOT SURE / DON'T REMEMBER") VS NOT ASKED:
+   - When patient clearly DENIES: Write "Patient denies..."
+   - When patient expresses UNCERTAINTY / LACK OF MEMORY: Record as "Uncertain / unconfirmed (patient does not recall / unsure)". DO NOT write "No" or "Denies"!
+   - When NOT asked: Record as "Not assessed".
+
+3. REVIEW OF SYSTEMS (ROS):
+   - Actively summarize associated systemic symptoms asked or reported during the interview (e.g. "Patient denies fever, vomiting, or dyspnea; reports diaphoresis").
+
+4. CLINICAL DECISION SUPPORT (CDSS) & DIAGNOSTIC IMPRESSION:
+   - `clinical_impression`:
+     * `clinical_synthesis`: Array of 2-3 concise bullet points: (1) Current acute presentation/timeline, (2) Corroborating lab/imaging findings, (3) Relevant historical ABHA context & primary clinical etiology rationale.
+     * `probable_diagnoses`: Top 2-3 differentials with `condition`, `likelihood` ("High"|"Medium"|"Low"), and `supporting_evidence`.
+     * `suggested_investigations`: 2-4 recommended next diagnostic tests/scans.
+     * `critical_rule_outs`: 1-3 high-risk life-threatening conditions to actively exclude.
+
+5. EMERGENCY TRIAGE & SEVERITY:
    - Set `is_emergency`: true if red flags (acute coronary syndrome, stroke signs, severe trauma, acute respiratory distress), else false.
    - Set `severity`: "High" | "Medium" | "Low".
 
-5. Set `next_question` to 'complete'.
+6. Set `next_question` to 'complete'.
 
 Output ONLY valid JSON:
 {PATIENT_JSON_TEMPLATE}"""
 
-        print(f"→ Synthesizing full clinical record (dialogue + documents) for patient {patient.patient_id} in background...")
+        print(f"→ Synthesizing tiered clinical record + CDSS (Tier 1 Input -> Tier 2 Docs -> Tier 3 ABHA) for patient {patient.patient_id} in background...")
         response_text = call_llm(prompt)
         result_json = json.loads(extract_json_string(response_text))
         result_json = unwrap_json(result_json)
@@ -844,7 +948,7 @@ Output ONLY valid JSON:
 
         # Update patient record with synthesized clinical data
         patient.chief_complaint = ext.chief_complaint or patient.chief_complaint
-        patient.hpi = ext.hpi or patient.hpi
+        patient.hpi = clean_hpi_text(ext.hpi or patient.hpi)
         patient.is_emergency = ext.is_emergency
         patient.severity = ext.severity or patient.severity
         patient.duration = ext.duration or "Unknown"
@@ -853,13 +957,15 @@ Output ONLY valid JSON:
         patient.personal_history = ext.personal_history or "No significant lifestyle risks"
         patient.allergies = ext.allergies or "No known drug allergies (NKDA)"
         patient.review_of_systems = ext.review_of_systems or "Patient denies associated systemic symptoms"
+        if ext.clinical_impression and isinstance(ext.clinical_impression, dict):
+            patient.clinical_impression_json = json.dumps(ext.clinical_impression)
         patient.prakriti = ext.prakriti if is_ayush else "Not assessed"
         patient.vikriti = ext.vikriti if is_ayush else "Not assessed"
         patient.agni = ext.agni if is_ayush else "Not assessed"
         patient.is_synthesized = True
 
         db.commit()
-        print(f"✅ Clinical record synthesis complete for {patient.patient_id} ({patient.chief_complaint})")
+        print(f"✅ Tiered Clinical record & CDSS synthesis complete for {patient.patient_id} ({patient.chief_complaint})")
 
         # Now correlate and filter past ABHA visit records against the full synthesized clinical profile
         if abha_id:
@@ -1394,6 +1500,24 @@ async def get_patient_summary(patient_id: Optional[str] = None, db: Session = De
     if not patient:
         return {"status": "No patients yet"}
 
+    # Auto-clean and persist HPI if it contains redundant cross-section leakage
+    cleaned_hpi = clean_hpi_text(patient.hpi) if patient.hpi else "None reported"
+    if patient.hpi and cleaned_hpi != patient.hpi:
+        patient.hpi = cleaned_hpi
+        try:
+            db.commit()
+        except Exception:
+            pass
+
+    impression = {}
+    if patient.clinical_impression_json:
+        try:
+            parsed = json.loads(patient.clinical_impression_json)
+            if isinstance(parsed, dict):
+                impression = parsed
+        except Exception:
+            impression = {}
+
     return {
         "patient_id": patient.patient_id,
         "patient_name": patient.patient_name or "Patient",
@@ -1402,7 +1526,7 @@ async def get_patient_summary(patient_id: Optional[str] = None, db: Session = De
         "phone": patient.phone or "",
         "abha_id": patient.abha_id,
         "chief_complaint": patient.chief_complaint or "Not recorded",
-        "hpi": patient.hpi or "None reported",
+        "hpi": cleaned_hpi,
         "is_emergency": patient.is_emergency,
         "severity": patient.severity or "Unknown",
         "duration": patient.duration or "Unknown",
@@ -1411,6 +1535,7 @@ async def get_patient_summary(patient_id: Optional[str] = None, db: Session = De
         "personal_history": patient.personal_history or "None reported",
         "allergies": patient.allergies or "None reported",
         "review_of_systems": patient.review_of_systems or "None reported",
+        "clinical_impression": impression,
         "prakriti": patient.prakriti or "Not assessed",
         "vikriti": patient.vikriti or "Not assessed",
         "agni": patient.agni or "Not assessed",
@@ -1497,6 +1622,42 @@ async def demo_data(background_tasks: BackgroundTasks, abha_id: Optional[str] = 
         "raw_text": "Demo cardiology follow-up document"
     }
 
+    demo_impression = {
+        "clinical_synthesis": [
+            "58-year-old male presenting with acute crushing retrosternal chest pain radiating to left arm with diaphoresis of 2 hours duration.",
+            "Historical ABHA records confirm prior STEMI (2024 PCI LAD stenting) and uncontrolled T2DM (HbA1c 8.2%).",
+            "Elevated lipid profile (LDL 145 mg/dL) and active presentation strongly indicate recurrent acute coronary syndrome / stent thrombosis."
+        ],
+        "probable_diagnoses": [
+            {
+                "condition": "Acute Coronary Syndrome / Recurrent NSTEMI vs Stent Thrombosis",
+                "likelihood": "High",
+                "supporting_evidence": "Crushing substernal pain radiating to left arm with diaphoresis, past STEMI with LAD stent in 2024, uncontrolled diabetes (HbA1c 8.2%)."
+            },
+            {
+                "condition": "Unstable Angina Pectoris",
+                "likelihood": "Medium",
+                "supporting_evidence": "Exertional chest discomfort with high cardiovascular risk profile and uncontrolled hyperlipidemia."
+            },
+            {
+                "condition": "Acute Gastroesophageal Reflux Disease (GERD) with Esophageal Spasm",
+                "likelihood": "Low",
+                "supporting_evidence": "Can mimic substernal chest pressure, but severe cardiac risk factors mandate treating as ACS until ruled out."
+            }
+        ],
+        "suggested_investigations": [
+            "Stat 12-lead ECG",
+            "Serial Cardiac Biomarkers (Troponin I & CK-MB at 0h, 3h)",
+            "Bedside 2D Echocardiography (Wall Motion Assessment)",
+            "Coronary Angiography consideration"
+        ],
+        "critical_rule_outs": [
+            "Acute Aortic Dissection",
+            "Pulmonary Embolism",
+            "Tension Pneumothorax"
+        ]
+    }
+
     patient = PatientRecord(
         patient_id=pt_id,
         abha_id=profile["abha_id"],
@@ -1514,6 +1675,7 @@ async def demo_data(background_tasks: BackgroundTasks, abha_id: Optional[str] = 
         personal_history="• Non-smoker, vegetarian diet",
         allergies="• None reported",
         review_of_systems="• No fever\n• Shortness of breath on exertion",
+        clinical_impression_json=json.dumps(demo_impression),
         prakriti="Not assessed",
         vikriti="Not assessed",
         agni="Not assessed",
