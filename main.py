@@ -1297,27 +1297,23 @@ async def process_audio(
     audio_bytes = await audio.read()
     pt_id = f"PT-{str(uuid.uuid4())[:4].upper()}"
 
-    # 1. Whisper STT
-    with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as tmp:
-        tmp.write(audio_bytes)
-        tmp_path = tmp.name
-
+    # 1. Whisper STT (In-Memory Streaming — Zero Disk I/O)
+    audio_stream = io.BytesIO(audio_bytes)
     lang_code = LANGUAGE_CODES.get(language, "en")
     segments, info = whisper_pipeline.transcribe(
-        tmp_path, 
+        audio_stream, 
         language=lang_code, 
         beam_size=1,
         best_of=1,
         vad_filter=True,
         vad_parameters=dict(
-            min_silence_duration_ms=500,
+            min_silence_duration_ms=400,
             threshold=0.5
         ),
         initial_prompt="A clinical consultation in a hospital OPD. Symptoms, pain, fever, duration, past history.",
         condition_on_previous_text=False
     )
     transcript = " ".join([segment.text for segment in segments]).strip()
-    os.remove(tmp_path)
     print(f"Transcript: {transcript}")
 
     # 2. Instant patient initialization (0ms LLM calls)
@@ -1478,26 +1474,23 @@ async def follow_up_audio(
         raise HTTPException(status_code=404, detail="Patient not found")
 
     audio_bytes = await audio.read()
-    with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as tmp:
-        tmp.write(audio_bytes)
-        tmp_path = tmp.name
-
+    # In-Memory Streaming — Zero Disk I/O
+    audio_stream = io.BytesIO(audio_bytes)
     lang_code = LANGUAGE_CODES.get(language, "en")
     segments, info = whisper_pipeline.transcribe(
-        tmp_path, 
+        audio_stream, 
         language=lang_code, 
         beam_size=1,
         best_of=1,
         vad_filter=True,
         vad_parameters=dict(
-            min_silence_duration_ms=500,
+            min_silence_duration_ms=400,
             threshold=0.5
         ),
         initial_prompt="A clinical consultation in a hospital OPD. Symptoms, pain, fever, duration, past medical history.",
         condition_on_previous_text=False
     )
     transcript = " ".join([segment.text for segment in segments]).strip()
-    os.remove(tmp_path)
     print(f"Follow-up transcript: {transcript}")
 
     return handle_followup_extraction(
@@ -1865,7 +1858,7 @@ async def get_patient_history(patient_id: str, db: Session = Depends(get_db)):
         except Exception:
             relevance_map = {}
     
-    filter_complete = bool(relevance_map)
+    filter_complete = bool(patient.is_synthesized) or bool(relevance_map) or (patient.abha_relevance_json is not None and patient.abha_relevance_json != "")
     
     relevant = []
     other = []

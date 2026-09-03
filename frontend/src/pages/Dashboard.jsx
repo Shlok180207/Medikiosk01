@@ -37,6 +37,9 @@ export default function Dashboard() {
       const data = await response.json();
       setPatientData(data);
       setStatus('Synchronized');
+      if (data && !data.is_synthesized) {
+        setTimeout(fetchData, 3000);
+      }
     } catch (error) {
       console.error('Failed to fetch data', error);
       setStatus('Error connecting');
@@ -270,7 +273,7 @@ export default function Dashboard() {
                   )}
                 </div>
 
-                {historyData.filter_status === 'processing' && (
+                {historyData.filter_status === 'processing' && !patientData?.is_synthesized && (
                   <div className="alert alert-warning mb-4" style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
                     <div className="spinner" style={{ width: 18, height: 18 }} />
                     🔄 AI is analyzing past medical history for relevance to today's complaint...
