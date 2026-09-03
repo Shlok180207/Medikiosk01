@@ -1831,6 +1831,7 @@ async def get_patient_summary(patient_id: Optional[str] = None, db: Session = De
         "vikriti": patient.vikriti or "Not assessed",
         "agni": patient.agni or "Not assessed",
         "flagged_lab_values": patient.flagged_lab_values or "[]",
+        "is_synthesized": bool(patient.is_synthesized),
         "created_at": patient.created_at,
     }
 

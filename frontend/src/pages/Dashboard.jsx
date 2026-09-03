@@ -37,9 +37,6 @@ export default function Dashboard() {
       const data = await response.json();
       setPatientData(data);
       setStatus('Synchronized');
-      if (data && !data.is_synthesized) {
-        setTimeout(fetchData, 3000);
-      }
     } catch (error) {
       console.error('Failed to fetch data', error);
       setStatus('Error connecting');
@@ -83,10 +80,6 @@ export default function Dashboard() {
       const response = await fetch(`${API_BASE_URL}/patient-history?patient_id=${selectedPatientId}`);
       const data = await response.json();
       setHistoryData(data);
-      // If still processing, poll again in 3 seconds
-      if (data.filter_status === 'processing') {
-        setTimeout(fetchHistory, 3000);
-      }
     } catch (error) {
       console.error('Failed to fetch history', error);
     }
@@ -186,7 +179,7 @@ export default function Dashboard() {
                 </p>
               </div>
               <div className="flex gap-3">
-                <button className="btn btn-secondary btn-sm" onClick={fetchData}>🔄 Refresh</button>
+                <button className="btn btn-secondary btn-sm" onClick={() => { fetchData(); fetchHistory(); }}>🔄 Refresh</button>
                 <button className="btn btn-primary btn-sm">✓ Start Consultation</button>
               </div>
             </div>
