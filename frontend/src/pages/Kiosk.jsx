@@ -13,6 +13,19 @@ export default function Kiosk() {
   const ttsUnlockedRef = useRef(false);
   const pendingSpeechRef = useRef(null);
 
+  const stopSpeaking = useCallback(() => {
+    pendingSpeechRef.current = null;
+    ttsUnlockedRef.current = true;
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+      audioRef.current = null;
+    }
+    if (window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+  }, []);
+
   const speakText = useCallback((text) => {
     if (!text) return;
     const skip = ['Processing...', 'Listening...', 'Noted.', 'Skipping...'];
@@ -132,6 +145,7 @@ export default function Kiosk() {
 
   // ── Voice Recording (Whisper offline) ──
   const handleMicClick = async () => {
+    stopSpeaking();
     if (isRecording) {
       if (recognitionRef.current) recognitionRef.current.stop();
       if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
@@ -146,6 +160,7 @@ export default function Kiosk() {
   };
 
   const startWhisperRecording = async () => {
+    stopSpeaking();
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const mediaRecorder = new MediaRecorder(stream);
@@ -176,6 +191,7 @@ export default function Kiosk() {
 
   // ── Text Input Handler ──
   const handleTextSubmit = async () => {
+    stopSpeaking();
     if (!textInput.trim() || isProcessing) return;
     const text = textInput.trim();
     setTextInput('');
@@ -188,6 +204,7 @@ export default function Kiosk() {
 
   // ── Quick Touch Answers ──
   const handleQuickAnswer = async (answer) => {
+    stopSpeaking();
     if (isProcessing) return;
     addMessage(answer, 'user');
     addMessage('Processing...', 'bot');
@@ -198,6 +215,7 @@ export default function Kiosk() {
 
   // ── Skip (Demo) ──
   const handleSkipDemo = async () => {
+    stopSpeaking();
     if (isProcessing) return;
     setIsProcessing(true);
     addMessage('Skipping... generating demo patient and lab report...', 'bot');
