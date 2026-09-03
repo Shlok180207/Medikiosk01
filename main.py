@@ -38,7 +38,7 @@ VISION_MODEL = "moondream"
 print("Loading Faster-Whisper on CUDA GPU (int8_float16)...")
 try:
     from faster_whisper import WhisperModel
-    whisper_pipeline = WhisperModel("large-v3", device="cuda", compute_type="int8_float16")
+    whisper_pipeline = WhisperModel("large-v3", device="cpu", compute_type="int8_float16")
     print("✅ Whisper loaded on CUDA GPU (transcription latency: ~0.5s).")
 except Exception as e:
     print(f"❌ Whisper failed: {e}")
