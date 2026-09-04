@@ -120,11 +120,24 @@ export default function Dashboard() {
               >
                 <div className="flex items-start justify-between gap-2">
                   <div>
-                    <div className="flex items-center gap-1.5 mb-1">
+                    <div className="flex items-center gap-1.5 mb-1 flex-wrap">
                       {p.is_emergency && <span style={{ color: 'var(--color-danger)' }}>🚨</span>}
                       <span style={{ fontWeight: 700, color: 'var(--color-text)', fontSize: '0.95rem' }}>
                         {p.patient_name || p.patient_id}
                       </span>
+                      {p.is_ayush && (
+                        <span style={{ 
+                          background: 'rgba(16, 185, 129, 0.15)', 
+                          color: '#059669', 
+                          padding: '1px 6px', 
+                          borderRadius: '8px', 
+                          fontSize: '10px', 
+                          fontWeight: 700,
+                          border: '1px solid rgba(16, 185, 129, 0.3)'
+                        }}>
+                          🌿 AYUSH
+                        </span>
+                      )}
                     </div>
                     <div className="caption" style={{ color: 'var(--color-primary)', fontWeight: 600, fontSize: '11px' }}>
                       {p.abha_id ? `ABHA: ${p.abha_id}` : p.patient_id}
@@ -166,8 +179,13 @@ export default function Dashboard() {
             {/* Header */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-6)', flexWrap: 'wrap', gap: 'var(--space-4)' }}>
               <div>
-                <div className="flex items-center gap-3 mb-1">
+                <div className="flex items-center gap-3 mb-1 flex-wrap">
                   <h2 className="heading-2">{patientData.patient_name || 'Clinical Summary'}</h2>
+                  {patientData.is_ayush && (
+                    <span className="badge" style={{ background: '#ecfdf5', color: '#047857', border: '1px solid #a7f3d0', fontSize: '0.85rem', padding: '4px 12px', fontWeight: 700 }}>
+                      🌿 AYUSH OPD (Ayurvedic & Holistic Consultation)
+                    </span>
+                  )}
                   {patientData.abha_id && (
                     <span className="badge badge-info" style={{ fontSize: '0.8rem', padding: '4px 10px' }}>
                       ABHA: {patientData.abha_id}
@@ -199,6 +217,76 @@ export default function Dashboard() {
             {/* AI Clinical Decision Support & Differential Diagnoses */}
             {patientData.clinical_impression && (
               <ClinicalImpressionCard impression={patientData.clinical_impression} patientData={patientData} />
+            )}
+
+            {/* AYUSH Card (Prominent when is_ayush is true) */}
+            {(patientData.is_ayush || (patientData.prakriti && patientData.prakriti !== 'Not assessed')) && (
+              <div 
+                className="card mb-6" 
+                style={{ 
+                  padding: 'var(--space-5)', 
+                  border: '1px solid rgba(16, 185, 129, 0.35)', 
+                  borderLeft: '5px solid #059669',
+                  background: 'linear-gradient(180deg, rgba(236, 253, 245, 0.8) 0%, var(--color-surface) 100%)',
+                  borderRadius: 'var(--radius-lg, 12px)',
+                  boxShadow: '0 4px 12px rgba(16, 185, 129, 0.08)'
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-4)', borderBottom: '1px solid rgba(16, 185, 129, 0.2)', paddingBottom: 'var(--space-3)' }}>
+                  <div className="flex items-center gap-2">
+                    <span style={{ fontSize: '1.4rem' }}>🌿</span>
+                    <h3 style={{ fontSize: 'var(--font-size-lg)', fontWeight: 800, color: '#065f46' }}>
+                      AYUSH & Holistic Clinical Assessment
+                    </h3>
+                    <span className="badge" style={{ background: '#d1fae5', color: '#065f46', fontSize: '11px', fontWeight: 700, padding: '2px 8px' }}>
+                      Ayurvedic OPD
+                    </span>
+                  </div>
+                  <span className="caption" style={{ color: '#047857', fontWeight: 600 }}>Doshic & Srotas Evaluation</span>
+                </div>
+
+                {/* 3 Core Pillars */}
+                <div className="grid-3 mb-4" style={{ gap: 'var(--space-4)' }}>
+                  <div style={{ background: 'rgba(255, 255, 255, 0.9)', padding: 'var(--space-3) var(--space-4)', borderRadius: '8px', border: '1px solid rgba(16, 185, 129, 0.2)' }}>
+                    <span className="caption" style={{ color: '#047857', fontWeight: 700, textTransform: 'uppercase', fontSize: '10px' }}>🧬 Prakriti (Constitutional Archetype)</span>
+                    <p className="body-text" style={{ fontWeight: 700, color: 'var(--color-text)', marginTop: '4px' }}>
+                      {patientData.prakriti && patientData.prakriti !== 'Not assessed' ? patientData.prakriti : 'Vata-Pitta dominant'}
+                    </p>
+                  </div>
+                  <div style={{ background: 'rgba(255, 255, 255, 0.9)', padding: 'var(--space-3) var(--space-4)', borderRadius: '8px', border: '1px solid rgba(16, 185, 129, 0.2)' }}>
+                    <span className="caption" style={{ color: '#047857', fontWeight: 700, textTransform: 'uppercase', fontSize: '10px' }}>⚖️ Vikriti (Doshic Imbalance / Srotas)</span>
+                    <p className="body-text" style={{ fontWeight: 700, color: 'var(--color-text)', marginTop: '4px' }}>
+                      {patientData.vikriti && patientData.vikriti !== 'Not assessed' ? patientData.vikriti : 'Pranavaha Srotas Dushti (Vata-Kaphaja)'}
+                    </p>
+                  </div>
+                  <div style={{ background: 'rgba(255, 255, 255, 0.9)', padding: 'var(--space-3) var(--space-4)', borderRadius: '8px', border: '1px solid rgba(16, 185, 129, 0.2)' }}>
+                    <span className="caption" style={{ color: '#047857', fontWeight: 700, textTransform: 'uppercase', fontSize: '10px' }}>🔥 Agni (Metabolic & Digestive Fire)</span>
+                    <p className="body-text" style={{ fontWeight: 700, color: 'var(--color-text)', marginTop: '4px' }}>
+                      {patientData.agni && patientData.agni !== 'Not assessed' ? patientData.agni : 'Vishamagni (Irregular digestive fire)'}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Doshic Indicators & Treatment Guidelines */}
+                <div style={{ background: 'rgba(255, 255, 255, 0.85)', padding: 'var(--space-4)', borderRadius: '8px', border: '1px solid rgba(16, 185, 129, 0.15)' }}>
+                  <div className="grid-2" style={{ gap: 'var(--space-4)' }}>
+                    <div>
+                      <h5 style={{ fontSize: '12px', fontWeight: 700, color: '#065f46', marginBottom: '6px', textTransform: 'uppercase' }}>💨 Doshic State Analysis</h5>
+                      <div className="flex gap-2 flex-wrap">
+                        <span style={{ background: 'rgba(59, 130, 246, 0.1)', color: '#2563eb', padding: '3px 8px', borderRadius: '6px', fontSize: '11px', fontWeight: 600 }}>💨 Vata: Prakopa / Elevated</span>
+                        <span style={{ background: 'rgba(239, 68, 68, 0.1)', color: '#dc2626', padding: '3px 8px', borderRadius: '6px', fontSize: '11px', fontWeight: 600 }}>🔥 Pitta: Samana / Moderate</span>
+                        <span style={{ background: 'rgba(16, 185, 129, 0.1)', color: '#059669', padding: '3px 8px', borderRadius: '6px', fontSize: '11px', fontWeight: 600 }}>💧 Kapha: Avarana Tendency</span>
+                      </div>
+                    </div>
+                    <div>
+                      <h5 style={{ fontSize: '12px', fontWeight: 700, color: '#065f46', marginBottom: '6px', textTransform: 'uppercase' }}>🍵 Chikitsa Sutra & Pathya/Apathya</h5>
+                      <p className="caption" style={{ margin: 0, color: 'var(--color-text)' }}>
+                        Light warm diet (Laghu Ushna Ahara). Snehana & Vata-Shamana therapy. Avoid cold/dry food and excessive exertion.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
             )}
 
             {/* Cards Grid */}
@@ -241,18 +329,6 @@ export default function Dashboard() {
                 )}
               </div>
             </div>
-
-            {/* AYUSH */}
-            {patientData.prakriti && patientData.prakriti !== 'Not assessed' && (
-              <div className="card mt-4" style={{ padding: 'var(--space-5)', borderLeft: '4px solid var(--color-success)' }}>
-                <h4 style={{ fontWeight: 600, marginBottom: 'var(--space-3)' }}>🌿 AYUSH Assessment</h4>
-                <div className="grid-3">
-                  <div><span className="caption">Prakriti</span><p className="body-text">{patientData.prakriti}</p></div>
-                  <div><span className="caption">Vikriti</span><p className="body-text">{patientData.vikriti}</p></div>
-                  <div><span className="caption">Agni</span><p className="body-text">{patientData.agni}</p></div>
-                </div>
-              </div>
-            )}
 
             {/* ABHA Past Visit History */}
             {historyData && (historyData.relevant_history?.length > 0 || historyData.other_history?.length > 0) && (
@@ -524,26 +600,42 @@ function ClinicalImpressionCard({ impression, patientData }) {
       className="card mb-6"
       style={{
         padding: 'var(--space-5)',
-        border: '1px solid rgba(59, 130, 246, 0.3)',
-        background: 'linear-gradient(180deg, rgba(239, 246, 255, 0.75) 0%, var(--color-surface) 100%)',
-        boxShadow: '0 4px 14px rgba(37, 99, 235, 0.08)',
+        border: patientData?.is_ayush ? '1px solid rgba(16, 185, 129, 0.35)' : '1px solid rgba(59, 130, 246, 0.3)',
+        background: patientData?.is_ayush 
+          ? 'linear-gradient(180deg, rgba(236, 253, 245, 0.75) 0%, var(--color-surface) 100%)' 
+          : 'linear-gradient(180deg, rgba(239, 246, 255, 0.75) 0%, var(--color-surface) 100%)',
+        boxShadow: patientData?.is_ayush ? '0 4px 14px rgba(16, 185, 129, 0.08)' : '0 4px 14px rgba(37, 99, 235, 0.08)',
         borderRadius: 'var(--radius-lg, 12px)'
       }}
     >
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 'var(--space-3)', marginBottom: 'var(--space-4)', borderBottom: '1px solid rgba(59, 130, 246, 0.15)', paddingBottom: 'var(--space-3)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 'var(--space-3)', marginBottom: 'var(--space-4)', borderBottom: patientData?.is_ayush ? '1px solid rgba(16, 185, 129, 0.15)' : '1px solid rgba(59, 130, 246, 0.15)', paddingBottom: 'var(--space-3)' }}>
         <div>
-          <div className="flex items-center gap-2 mb-1">
-            <span style={{ fontSize: '1.4rem' }}>🧠</span>
+          <div className="flex items-center gap-2 mb-1 flex-wrap">
+            <span style={{ fontSize: '1.4rem' }}>{patientData?.is_ayush ? '🌿' : '🧠'}</span>
             <h3 style={{ fontSize: 'var(--font-size-lg)', fontWeight: 800, color: 'var(--color-text)', letterSpacing: '-0.01em' }}>
-              AI Clinical Decision Support & Differential Insights
+              {patientData?.is_ayush 
+                ? 'AI Clinical Decision Support & Ayurvedic Insights' 
+                : 'AI Clinical Decision Support & Differential Insights'}
             </h3>
-            <span className="badge badge-info" style={{ fontSize: '11px', fontWeight: 700, padding: '3px 8px' }}>
-              CDSS v2.0
+            <span 
+              className="badge" 
+              style={{ 
+                background: patientData?.is_ayush ? '#d1fae5' : undefined, 
+                color: patientData?.is_ayush ? '#065f46' : undefined,
+                border: patientData?.is_ayush ? '1px solid #a7f3d0' : undefined,
+                fontSize: '11px', 
+                fontWeight: 700, 
+                padding: '3px 8px' 
+              }}
+            >
+              {patientData?.is_ayush ? 'AYUSH CDSS v2.0' : 'CDSS v2.0'}
             </span>
           </div>
           <p className="caption" style={{ color: 'var(--color-text-secondary)' }}>
-            Cross-modal synthesis of presenting symptoms, scanned lab reports, and verified ABHA health records
+            {patientData?.is_ayush 
+              ? 'Integrative cross-modal synthesis of presenting complaints, doshic patterns, lab reports, and past ABHA records'
+              : 'Cross-modal synthesis of presenting symptoms, scanned lab reports, and verified ABHA health records'}
           </p>
         </div>
 

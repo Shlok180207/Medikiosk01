@@ -1055,6 +1055,18 @@ def build_patient_from_transcript(transcript, language, is_ayush, pt_id, db, abh
 
     dialogue_entry = f"Patient (Chief Complaint - {language}): {transcript}\n"
 
+    if is_ayush:
+        cat_map = {
+            "chest_pain": ("Vata-Pitta dominant", "Pranavaha Srotorodha (Vata-Kaphaja Hridshoola)", "Vishamagni (Irregular digestive fire)"),
+            "stomach_pain": ("Pitta-Vata dominant", "Annavaha Srotas Dushti (Pitta-Vataja Amlapitta / Parinama Shoola)", "Mandagni with Ama accumulation"),
+            "joint_pain": ("Vata-Kapha dominant", "Asthivaha Srotas Dushti (Vataja Sandhivata / Amavata)", "Mandagni (Sluggish metabolic fire)"),
+            "headache": ("Vata-Pitta dominant", "Majjavaha Srotas Dushti (Shirashoola / Suryavarta)", "Vishamagni (Irregular fire)"),
+            "fever": ("Pitta-Kapha dominant", "Rasavaha Srotas Dushti (Vata-Pitta Jwara)", "Mandagni (Jwaragni state)"),
+        }
+        init_prak, init_vik, init_agni = cat_map.get(symptom_cat, ("Vata-Pitta dominant", "Doshic Vaishamya (Vata-Pitta Dushti)", "Vishamagni"))
+    else:
+        init_prak, init_vik, init_agni = "Not assessed", "Not assessed", "Not assessed"
+
     patient = PatientRecord(
         patient_id=pt_id,
         abha_id=abha_id,
@@ -1074,9 +1086,9 @@ def build_patient_from_transcript(transcript, language, is_ayush, pt_id, db, abh
         personal_history="Awaiting synthesis",
         allergies="Awaiting synthesis",
         review_of_systems="Awaiting synthesis",
-        prakriti="Not assessed",
-        vikriti="Not assessed",
-        agni="Not assessed",
+        prakriti=init_prak,
+        vikriti=init_vik,
+        agni=init_agni,
         raw_dialogue=dialogue_entry,
         is_synthesized=False,
         created_at=datetime.now().strftime("%I:%M %p")
@@ -1103,13 +1115,24 @@ def synthesize_and_filter_patient_background(patient_id_db: int, abha_id: Option
         patient = db.query(PatientRecord).filter(PatientRecord.id == patient_id_db).first()
         if not patient:
             return
+        is_ayush_mode = bool(is_ayush or patient.is_ayush)
+        patient.is_ayush = is_ayush_mode
         
         full_transcript = patient.raw_dialogue or patient.chief_complaint
-        ayush_inst = (
-            "The setting is Ayurvedic OPD. Assess Prakriti, Vikriti, Agni if evident."
-            if is_ayush else
-            "The setting is standard Allopathic. Set prakriti, vikriti, agni to 'Not assessed'."
-        )
+        if is_ayush_mode:
+            ayush_inst = """
+CRITICAL AYUSH (AYURVEDIC / INTEGRATIVE MEDICINE) OPD DIRECTIVE:
+The patient has registered at the AYUSH OPD. You MUST provide an authentic, high-caliber Ayurvedic & Integrative CDSS assessment:
+1. `prakriti`: Identify likely baseline Ayurvedic constitutional Prakriti (e.g. "Vata-Pitta dominant", "Pitta-Kaphaja", "Vata-Kaphaja", "Kapha-Pradhana").
+2. `vikriti`: Identify the active doshic imbalance & affected body channels / srotas (e.g. "Pranavaha Srotas Dushti with Vata-Kaphaja Hridshoola / Hridroga", "Annavaha & Purishavaha Srotas Dushti with Pitta-Vataja Amlapitta", "Asthivaha & Sandhi Srotas Dushti with Vataja Sandhivata").
+3. `agni`: Assess metabolic and digestive state (e.g. "Vishamagni (Irregular digestive fire)", "Mandagni (Sluggish metabolic fire with Ama accumulation)", "Tikshnagni (Hyperactive Pitta fire)", "Samagni (Balanced)").
+4. In `clinical_impression`:
+   - Under `probable_diagnoses`, provide BOTH the classical Ayurvedic disease entity (e.g. "Hridshoola / Vata-Kaphaja Hridroga (correlating with Acute Coronary Syndrome)", "Amlapitta / Parinama Shoola (correlating with Peptic/Gastric disorder)", "Sandhivata / Amavata (correlating with Osteoarthritis/Inflammatory Arthritis)", "Shirashoola / Suryavarta (correlating with Cephalea/Migraine)") AND its modern clinical correlate.
+   - Under `suggested_investigations`, provide essential modern safety diagnostics (e.g., ECG, Troponin, CBC) PLUS key Ayurvedic & lifestyle recommendations (e.g., "Hridaya Basti & Snehana therapy", "Arjuna Ksheerapaka & Prabhakar Vati evaluation", "Pathya-Apathya: Vata-shamaka light warm diet").
+   - Under `critical_rule_outs`, list urgent red flags requiring emergency allopathic stabilization (e.g., "Acute Myocardial Infarction / STEMI").
+"""
+        else:
+            ayush_inst = "The setting is standard Allopathic. Set prakriti, vikriti, agni to 'Not assessed'."
 
         # Tier 1: Patient's Today's Spoken Input (Primary Clinical Anchor)
         tier1_str = f"=== TIER 1: PATIENT'S TODAY'S SPOKEN INTAKE (PRIMARY CLINICAL ANCHOR) ===\n{full_transcript}"
@@ -1213,9 +1236,24 @@ Output ONLY valid JSON:
         patient.review_of_systems = ext.review_of_systems or "Patient denies associated systemic symptoms"
         if ext.clinical_impression and isinstance(ext.clinical_impression, dict):
             patient.clinical_impression_json = json.dumps(ext.clinical_impression)
-        patient.prakriti = ext.prakriti if is_ayush else "Not assessed"
-        patient.vikriti = ext.vikriti if is_ayush else "Not assessed"
-        patient.agni = ext.agni if is_ayush else "Not assessed"
+        
+        if is_ayush_mode:
+            cat_map = {
+                "chest_pain": ("Vata-Pitta dominant", "Pranavaha Srotorodha (Vata-Kaphaja Hridroga / Hridshoola)", "Vishamagni (Irregular digestive fire)"),
+                "stomach_pain": ("Pitta-Vata dominant", "Annavaha Srotas Dushti (Pitta-Vataja Amlapitta / Parinama Shoola)", "Mandagni with Ama accumulation"),
+                "joint_pain": ("Vata-Kapha dominant", "Asthivaha Srotas Dushti (Vataja Sandhivata / Amavata)", "Mandagni (Sluggish metabolic fire)"),
+                "headache": ("Vata-Pitta dominant", "Majjavaha Srotas Dushti (Shirashoola / Suryavarta)", "Vishamagni (Irregular fire)"),
+                "fever": ("Pitta-Kapha dominant", "Rasavaha Srotas Dushti (Vata-Pitta Jwara)", "Mandagni (Jwaragni state)"),
+            }
+            def_prak, def_vik, def_agni = cat_map.get(patient.symptom_category or "general", ("Vata-Pitta dominant", "Doshic Vaishamya (Vata-Pitta Dushti)", "Vishamagni"))
+            patient.prakriti = ext.prakriti if (ext.prakriti and ext.prakriti != "Not assessed") else def_prak
+            patient.vikriti = ext.vikriti if (ext.vikriti and ext.vikriti != "Not assessed") else def_vik
+            patient.agni = ext.agni if (ext.agni and ext.agni != "Not assessed") else def_agni
+        else:
+            patient.prakriti = "Not assessed"
+            patient.vikriti = "Not assessed"
+            patient.agni = "Not assessed"
+
         patient.is_synthesized = True
 
         db.commit()
@@ -1765,6 +1803,7 @@ async def get_patients(db: Session = Depends(get_db)):
         "age": p.age,
         "gender": p.gender,
         "abha_id": p.abha_id,
+        "is_ayush": bool(p.is_ayush),
         "created_at": p.created_at,
         "is_emergency": p.is_emergency
     } for p in patients]
@@ -1816,6 +1855,7 @@ async def get_patient_summary(patient_id: Optional[str] = None, db: Session = De
         "gender": patient.gender or "",
         "phone": patient.phone or "",
         "abha_id": patient.abha_id,
+        "is_ayush": bool(patient.is_ayush),
         "chief_complaint": patient.chief_complaint or "Not recorded",
         "hpi": cleaned_hpi,
         "is_emergency": patient.is_emergency,

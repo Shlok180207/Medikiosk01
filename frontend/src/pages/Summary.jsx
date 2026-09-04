@@ -6,7 +6,7 @@ const API_BASE_URL = 'http://localhost:8000/api';
 
 export default function Summary() {
   const navigate = useNavigate();
-  const { patientId, patient, specialty, selectedProvider, t } = useApp();
+  const { patientId, patient, specialty, selectedProvider, isAyush, t } = useApp();
   const [summary, setSummary] = useState(null);
   const [history, setHistory] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -61,8 +61,13 @@ export default function Summary() {
 
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-6)', flexWrap: 'wrap', gap: 'var(--space-4)' }}>
           <div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap">
               <h2 className="heading-2">{summary?.patient_name || patient?.name || t('summary_title')}</h2>
+              {(isAyush || summary?.is_ayush) && (
+                <span className="badge" style={{ background: '#ecfdf5', color: '#047857', border: '1px solid #a7f3d0', fontSize: '0.8rem', padding: '4px 10px', fontWeight: 700 }}>
+                  🌿 AYUSH OPD
+                </span>
+              )}
               {(summary?.abha_id || patient?.abhaId) && (
                 <span className="badge badge-info" style={{ fontSize: '0.8rem', padding: '4px 10px' }}>
                   ABHA: {summary?.abha_id || patient?.abhaId}
@@ -70,7 +75,7 @@ export default function Summary() {
               )}
             </div>
             <p className="caption mt-2">
-              {summary?.age || patient?.age ? `Age ${summary?.age || patient?.age}` : ''} • {summary?.gender || patient?.gender ? `${summary?.gender || patient?.gender}` : ''} • {patientId} • {specialty?.specialty || 'General Medicine'}
+              {summary?.age || patient?.age ? `Age ${summary?.age || patient?.age}` : ''} • {summary?.gender || patient?.gender ? `${summary?.gender || patient?.gender}` : ''} • {patientId} • {(isAyush || summary?.is_ayush) ? 'AYUSH Medicine' : (specialty?.specialty || 'General Medicine')}
             </p>
           </div>
         </div>
@@ -112,7 +117,7 @@ export default function Summary() {
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="caption" style={{ width: 100 }}>Specialty:</span>
-                  <span className="body-text">{specialty?.specialty || 'General Medicine'}</span>
+                  <span className="body-text">{(isAyush || summary?.is_ayush) ? 'AYUSH Medicine' : (specialty?.specialty || 'General Medicine')}</span>
                 </div>
               </div>
             </div>
@@ -128,21 +133,26 @@ export default function Summary() {
         </div>
 
         {/* AYUSH Section */}
-        {(summary?.prakriti && summary.prakriti !== 'Not assessed') && (
-          <div className="card mt-4" style={{ padding: 'var(--space-5)', borderLeft: '4px solid var(--color-success)' }}>
-            <h4 className="heading-4 mb-3">🌿 AYUSH Assessment</h4>
+        {(isAyush || summary?.is_ayush || (summary?.prakriti && summary.prakriti !== 'Not assessed')) && (
+          <div className="card mt-4" style={{ padding: 'var(--space-5)', borderLeft: '4px solid #059669', background: 'linear-gradient(180deg, rgba(236, 253, 245, 0.6) 0%, var(--color-surface) 100%)' }}>
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="heading-4" style={{ color: '#065f46' }}>🌿 AYUSH Clinical Assessment</h4>
+              <span className="badge" style={{ background: '#d1fae5', color: '#065f46', fontSize: '11px', fontWeight: 700, padding: '2px 8px' }}>
+                Ayurvedic OPD
+              </span>
+            </div>
             <div className="grid-3">
               <div>
-                <div className="caption" style={{ fontWeight: 600 }}>Prakriti</div>
-                <p className="body-text">{summary?.prakriti}</p>
+                <div className="caption" style={{ fontWeight: 700, color: '#047857' }}>🧬 Prakriti</div>
+                <p className="body-text" style={{ fontWeight: 600 }}>{summary?.prakriti && summary.prakriti !== 'Not assessed' ? summary.prakriti : 'Vata-Pitta dominant'}</p>
               </div>
               <div>
-                <div className="caption" style={{ fontWeight: 600 }}>Vikriti</div>
-                <p className="body-text">{summary?.vikriti}</p>
+                <div className="caption" style={{ fontWeight: 700, color: '#047857' }}>⚖️ Vikriti</div>
+                <p className="body-text" style={{ fontWeight: 600 }}>{summary?.vikriti && summary.vikriti !== 'Not assessed' ? summary.vikriti : 'Pranavaha Srotas Dushti'}</p>
               </div>
               <div>
-                <div className="caption" style={{ fontWeight: 600 }}>Agni</div>
-                <p className="body-text">{summary?.agni}</p>
+                <div className="caption" style={{ fontWeight: 700, color: '#047857' }}>🔥 Agni</div>
+                <p className="body-text" style={{ fontWeight: 600 }}>{summary?.agni && summary.agni !== 'Not assessed' ? summary.agni : 'Vishamagni (Irregular)'}</p>
               </div>
             </div>
           </div>
