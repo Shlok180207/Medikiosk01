@@ -3,7 +3,7 @@ MediKiosk v2 — AI-Powered Clinical Intake Backend
 100% Offline: Whisper (STT) + Ollama qwen2.5:3b (NLP) + llama3.2-vision (OCR)
 """
 
-from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, Form, BackgroundTasks
+from fastapi import FastAPI, Request, UploadFile, File, Depends, HTTPException, Form, BackgroundTasks
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -30,18 +30,36 @@ load_dotenv()
 # ── Offline AI Models ──
 import ollama
 
-OLLAMA_MODEL = "qwen2.5:7b"
-FALLBACK_MODEL = "qwen2.5:7b"
-VISION_MODEL = "moondream"
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
+FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "qwen2.5:3b")
+VISION_MODEL = os.getenv("VISION_MODEL", "moondream")
 
-# Load Whisper on CUDA GPU (int8_float16) for blazing-fast 0.5s speech transcription
-print("Loading Faster-Whisper on CUDA GPU (int8_float16)...")
+# Load Whisper on CUDA GPU if available, else CPU fallback
+print("Initializing Faster-Whisper...")
+whisper_pipeline = None
+has_cuda = False
+try:
+    import torch
+    has_cuda = torch.cuda.is_available()
+except Exception:
+    has_cuda = False
+
 try:
     from faster_whisper import WhisperModel
-    whisper_pipeline = WhisperModel("large-v3", device="cuda", compute_type="int8_float16")
-    print("✅ Whisper loaded on CUDA GPU (transcription latency: ~0.5s).")
+    whisper_model_name = os.getenv("WHISPER_MODEL", "large-v3" if has_cuda else "base")
+    if has_cuda:
+        try:
+            whisper_pipeline = WhisperModel(whisper_model_name, device="cuda", compute_type="float16")
+            print(f"✅ Whisper ({whisper_model_name}) loaded on CUDA GPU.")
+        except Exception as cuda_err:
+            print(f"⚠️ CUDA load for {whisper_model_name} failed ({cuda_err}). Loading Faster-Whisper on CPU...")
+            whisper_pipeline = WhisperModel("base", device="cpu", compute_type="int8")
+            print("✅ Whisper loaded on CPU (base model, fast & offline).")
+    else:
+        whisper_pipeline = WhisperModel("base", device="cpu", compute_type="int8")
+        print("✅ Whisper loaded on CPU (base model, fast & offline).")
 except Exception as e:
-    print(f"❌ Whisper failed: {e}")
+    print(f"❌ Whisper initialization failed: {e}")
     whisper_pipeline = None
 
 
@@ -72,11 +90,14 @@ def call_llm(prompt: str, image_bytes: Optional[bytes] = None) -> str:
     except Exception as e:
         if model != FALLBACK_MODEL:
             print(f"⚠️ {model} not ready or failed ({e}), falling back to {FALLBACK_MODEL}...")
-            response = ollama.chat(model=FALLBACK_MODEL, messages=messages, format='json', options={
-                'num_ctx': 32768,
-                'temperature': 0.1
-            })
-            return response['message']['content']
+            try:
+                response = ollama.chat(model=FALLBACK_MODEL, messages=messages, format='json', options={
+                    'num_ctx': 4096,
+                    'temperature': 0.1
+                })
+                return response['message']['content']
+            except Exception as fb_err:
+                print(f"⚠️ Fallback model {FALLBACK_MODEL} also failed: {fb_err}")
         raise e
 
 
@@ -1571,14 +1592,29 @@ Output ONLY valid JSON:
                 pdf_doc = fitz.open(stream=file_bytes, filetype="pdf")
                 for page in pdf_doc:
                     extracted_text += page.get_text() + "\n"
-                prompt = f"Extracted Text:\n{extracted_text}\n\n{prompt_base}"
-                response_text = call_llm(prompt)
+                if not extracted_text.strip() and len(pdf_doc) > 0:
+                    print("PDF has no digital text layer, converting page 1 to image for vision OCR...")
+                    pix = pdf_doc[0].get_pixmap()
+                    img_bytes = pix.tobytes("png")
+                    response_text = call_llm(prompt_base, image_bytes=img_bytes)
+                else:
+                    prompt = f"Extracted Text:\n{extracted_text}\n\n{prompt_base}"
+                    response_text = call_llm(prompt)
             else:
                 print(f"Using {VISION_MODEL} for image in background...")
                 response_text = call_llm(prompt_base, image_bytes=file_bytes)
 
             result_json = json.loads(extract_json_string(response_text))
             result_json = unwrap_json(result_json)
+            if isinstance(result_json, dict):
+                for k in ["diagnoses", "medications", "flagged_values"]:
+                    v = result_json.get(k)
+                    if v is None:
+                        result_json[k] = []
+                    elif isinstance(v, str):
+                        result_json[k] = [v] if v.strip() else []
+                    elif not isinstance(v, list):
+                        result_json[k] = [str(v)]
             extraction = DocumentExtraction(**result_json)
             structured_data = {
                 "document_type": extraction.document_type,
@@ -1624,6 +1660,7 @@ Output ONLY valid JSON:
 # ── Document Processing ──
 @app.post("/api/process-document")
 async def process_document(
+    request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     patient_id: Optional[str] = Form(None),
@@ -1648,9 +1685,8 @@ async def process_document(
     with open(file_path, "wb") as f:
         f.write(file_bytes)
     
-    # We will pass the full url, assuming frontend is on same host or API is absolute
-    base_url = "http://localhost:8000" 
-    file_url = f"{base_url}/uploads/{saved_filename}"
+    # Store relative path so any host (localhost, Colab tunnel, domain) resolves it dynamically
+    file_url = f"/uploads/{saved_filename}"
 
     # Dispatch to background task
     background_tasks.add_task(

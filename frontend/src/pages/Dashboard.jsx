@@ -1,6 +1,18 @@
 import React, { useState, useEffect } from 'react';
 
-const API_BASE_URL = 'http://localhost:8000/api';
+import { API_BASE_URL } from '../config';
+
+const resolveFileUrl = (url) => {
+  if (!url) return '';
+  const backendOrigin = API_BASE_URL.replace(/\/api\/?$/, '');
+  if (url.startsWith('http://localhost:8000')) {
+    return url.replace('http://localhost:8000', backendOrigin);
+  }
+  if (url.startsWith('/')) {
+    return `${backendOrigin}${url}`;
+  }
+  return url;
+};
 
 export default function Dashboard() {
   const [queue, setQueue] = useState([]);
@@ -456,7 +468,7 @@ function DocumentsView({ data, patientId }) {
         )}
         
         {doc.file_url && (
-           <a href={doc.file_url} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm mt-3" style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+           <a href={resolveFileUrl(doc.file_url)} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm mt-3" style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--space-2)' }}>
              👁️ View Full Original Document
            </a>
         )}
