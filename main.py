@@ -34,33 +34,41 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
 FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "qwen2.5:3b")
 VISION_MODEL = os.getenv("VISION_MODEL", "moondream")
 
-# Load Whisper on CUDA GPU if available, else CPU fallback
-print("Initializing Faster-Whisper...")
+# ── Faster-Whisper (Lazy-loaded on first audio transcription) ──
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 whisper_pipeline = None
-has_cuda = False
-try:
-    import torch
-    has_cuda = torch.cuda.is_available()
-except Exception:
-    has_cuda = False
 
-try:
-    from faster_whisper import WhisperModel
-    whisper_model_name = os.getenv("WHISPER_MODEL", "large-v3" if has_cuda else "base")
-    if has_cuda:
-        try:
-            whisper_pipeline = WhisperModel(whisper_model_name, device="cuda", compute_type="float16")
-            print(f"✅ Whisper ({whisper_model_name}) loaded on CUDA GPU.")
-        except Exception as cuda_err:
-            print(f"⚠️ CUDA load for {whisper_model_name} failed ({cuda_err}). Loading Faster-Whisper on CPU...")
-            whisper_pipeline = WhisperModel("base", device="cpu", compute_type="int8")
-            print("✅ Whisper loaded on CPU (base model, fast & offline).")
-    else:
+def get_whisper_pipeline():
+    global whisper_pipeline
+    if whisper_pipeline is not None:
+        return whisper_pipeline
+
+    print("⏳ Initializing Faster-Whisper on first use...")
+    has_cuda = False
+    try:
+        import torch
+        has_cuda = torch.cuda.is_available()
+    except Exception:
+        has_cuda = False
+
+    try:
+        from faster_whisper import WhisperModel
+        whisper_model_name = os.getenv("WHISPER_MODEL", "large-v3" if has_cuda else "base")
+        if has_cuda:
+            try:
+                whisper_pipeline = WhisperModel(whisper_model_name, device="cuda", compute_type="float16")
+                print(f"✅ Whisper ({whisper_model_name}) loaded on CUDA GPU.")
+                return whisper_pipeline
+            except Exception as cuda_err:
+                print(f"⚠️ CUDA load for {whisper_model_name} failed ({cuda_err}). Loading Faster-Whisper on CPU...")
+        
         whisper_pipeline = WhisperModel("base", device="cpu", compute_type="int8")
         print("✅ Whisper loaded on CPU (base model, fast & offline).")
-except Exception as e:
-    print(f"❌ Whisper initialization failed: {e}")
-    whisper_pipeline = None
+        return whisper_pipeline
+    except Exception as e:
+        print(f"❌ Whisper initialization failed: {e}")
+        return None
 
 
 # ── LLM Helpers ──
@@ -1359,7 +1367,10 @@ async def process_audio(
     # 1. Whisper STT (In-Memory Streaming — Zero Disk I/O)
     audio_stream = io.BytesIO(audio_bytes)
     lang_code = LANGUAGE_CODES.get(language, "en")
-    segments, info = whisper_pipeline.transcribe(
+    stt_model = get_whisper_pipeline()
+    if not stt_model:
+        raise HTTPException(status_code=503, detail="Speech-to-text engine is initializing or unavailable.")
+    segments, info = stt_model.transcribe(
         audio_stream, 
         language=lang_code, 
         beam_size=1,
@@ -1536,7 +1547,10 @@ async def follow_up_audio(
     # In-Memory Streaming — Zero Disk I/O
     audio_stream = io.BytesIO(audio_bytes)
     lang_code = LANGUAGE_CODES.get(language, "en")
-    segments, info = whisper_pipeline.transcribe(
+    stt_model = get_whisper_pipeline()
+    if not stt_model:
+        raise HTTPException(status_code=503, detail="Speech-to-text engine is initializing or unavailable.")
+    segments, info = stt_model.transcribe(
         audio_stream, 
         language=lang_code, 
         beam_size=1,
