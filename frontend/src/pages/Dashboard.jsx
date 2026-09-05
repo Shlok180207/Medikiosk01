@@ -85,6 +85,45 @@ export default function Dashboard() {
     }
   }, [selectedPatientId]);
 
+  const [isGeneratingCDSS, setIsGeneratingCDSS] = useState(false);
+
+  // Poll for clinical synthesis if selected patient is not yet synthesized
+  useEffect(() => {
+    if (patientData && !patientData.is_synthesized && selectedPatientId) {
+      const timer = setInterval(() => {
+        fetchData();
+        fetchHistory();
+      }, 3000);
+      return () => clearInterval(timer);
+    }
+  }, [patientData?.is_synthesized, selectedPatientId]);
+
+  // Trigger or re-run CDSS synthesis on demand
+  const handleGenerateCDSS = async (force = false) => {
+    if (!selectedPatientId || isGeneratingCDSS) return;
+    setIsGeneratingCDSS(true);
+    try {
+      const formData = new FormData();
+      formData.append('patient_id', selectedPatientId);
+      formData.append('is_ayush', Boolean(patientData?.is_ayush));
+      formData.append('force', Boolean(force));
+      const res = await fetch(`${API_BASE_URL}/synthesize-cdss`, {
+        method: 'POST',
+        body: formData
+      });
+      const data = await res.json();
+      if (data.clinical_impression) {
+        setPatientData(prev => prev ? ({ ...prev, clinical_impression: data.clinical_impression, is_synthesized: true }) : prev);
+      }
+      fetchData();
+      fetchHistory();
+    } catch (err) {
+      console.error('Failed to trigger CDSS synthesis:', err);
+    } finally {
+      setIsGeneratingCDSS(false);
+    }
+  };
+
   // Fetch ABHA-linked history
   const fetchHistory = async () => {
     if (!selectedPatientId) return;
@@ -227,8 +266,48 @@ export default function Dashboard() {
             </div>
 
             {/* AI Clinical Decision Support & Differential Diagnoses */}
-            {patientData.clinical_impression && (
-              <ClinicalImpressionCard impression={patientData.clinical_impression} patientData={patientData} />
+            {patientData.clinical_impression && (patientData.clinical_impression.probable_diagnoses?.length > 0 || patientData.clinical_impression.clinical_synthesis) ? (
+              <ClinicalImpressionCard 
+                impression={patientData.clinical_impression} 
+                patientData={patientData} 
+                onRefreshCDSS={() => handleGenerateCDSS(true)}
+                isGeneratingCDSS={isGeneratingCDSS}
+              />
+            ) : (
+              <div 
+                className="card mb-6"
+                style={{
+                  padding: 'var(--space-5)',
+                  border: patientData?.is_ayush ? '1px dashed #059669' : '1px dashed var(--color-primary)',
+                  background: patientData?.is_ayush 
+                    ? 'linear-gradient(135deg, rgba(236, 253, 245, 0.8) 0%, var(--color-surface) 100%)' 
+                    : 'linear-gradient(135deg, rgba(239, 246, 255, 0.8) 0%, var(--color-surface) 100%)',
+                  borderRadius: 'var(--radius-lg, 12px)',
+                  boxShadow: '0 2px 8px rgba(0, 0, 0, 0.04)'
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 'var(--space-3)' }}>
+                  <div className="flex items-center gap-3">
+                    <div className="spinner" style={{ width: 22, height: 22, borderWidth: 3 }} />
+                    <div>
+                      <h4 style={{ fontWeight: 700, fontSize: '1rem', color: 'var(--color-text)', margin: '0 0 4px 0' }}>
+                        {patientData?.is_ayush ? '🌿 AYUSH CDSS Insights Analyzing...' : '🧠 AI Clinical Decision Support (CDSS) Analyzing...'}
+                      </h4>
+                      <p className="caption" style={{ color: 'var(--color-text-secondary)', margin: 0 }}>
+                        Synthesizing presenting symptoms, scanned documents, and ABHA historical data...
+                      </p>
+                    </div>
+                  </div>
+                  <button 
+                    className={`btn ${patientData?.is_ayush ? 'btn-success' : 'btn-primary'} btn-sm`}
+                    onClick={() => handleGenerateCDSS(true)}
+                    disabled={isGeneratingCDSS}
+                    style={{ fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                  >
+                    {isGeneratingCDSS ? '⚡ Synthesizing...' : '⚡ Generate CDSS Now'}
+                  </button>
+                </div>
+              </div>
             )}
 
             {/* AYUSH Card (Prominent when is_ayush is true) */}
@@ -565,7 +644,7 @@ function VisitCard({ visit, isRelevant }) {
   );
 }
 
-function ClinicalImpressionCard({ impression, patientData }) {
+function ClinicalImpressionCard({ impression, patientData, onRefreshCDSS, isGeneratingCDSS }) {
   const [isVerified, setIsVerified] = useState(false);
   const [copiedTest, setCopiedTest] = useState(null);
 
@@ -641,7 +720,7 @@ function ClinicalImpressionCard({ impression, patientData }) {
                 padding: '3px 8px' 
               }}
             >
-              {patientData?.is_ayush ? 'AYUSH CDSS v2.0' : 'CDSS v2.0'}
+              {patientData?.is_ayush ? 'AYUSH CDSS v5.0' : 'CDSS v5.0'}
             </span>
           </div>
           <p className="caption" style={{ color: 'var(--color-text-secondary)' }}>
@@ -651,14 +730,27 @@ function ClinicalImpressionCard({ impression, patientData }) {
           </p>
         </div>
 
-        {/* Doctor Verification Control */}
-        <button
-          onClick={() => setIsVerified(!isVerified)}
-          className={`btn btn-sm ${isVerified ? 'btn-primary' : 'btn-outline'}`}
-          style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontWeight: 600, transition: 'all 0.2s ease' }}
-        >
-          {isVerified ? '✅ Verified by Doctor' : '👨‍⚕️ Click to Verify Impression'}
-        </button>
+        {/* Doctor Controls */}
+        <div className="flex items-center gap-2">
+          {onRefreshCDSS && (
+            <button
+              onClick={onRefreshCDSS}
+              disabled={isGeneratingCDSS}
+              className="btn btn-sm btn-outline"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontWeight: 600, transition: 'all 0.2s ease' }}
+              title="Re-run AI clinical synthesis on this patient"
+            >
+              {isGeneratingCDSS ? '⚡ Synthesizing...' : '🔄 Re-analyze with AI'}
+            </button>
+          )}
+          <button
+            onClick={() => setIsVerified(!isVerified)}
+            className={`btn btn-sm ${isVerified ? 'btn-primary' : 'btn-outline'}`}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontWeight: 600, transition: 'all 0.2s ease' }}
+          >
+            {isVerified ? '✅ Verified by Doctor' : '👨‍⚕️ Click to Verify Impression'}
+          </button>
+        </div>
       </div>
 
       {/* Clinical Synthesis Executive Summary */}

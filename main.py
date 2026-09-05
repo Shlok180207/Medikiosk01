@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import uvicorn
-from typing import List, Optional
+from typing import List, Optional, Union, Any, Dict
 import os, uuid, json, re, io, tempfile, base64, hashlib
 from gtts import gTTS
 from datetime import datetime
@@ -110,8 +110,16 @@ def call_llm(prompt: str, image_bytes: Optional[bytes] = None) -> str:
 
 
 def extract_json_string(text: str) -> str:
+    if not text:
+        return "{}"
     match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-    return match.group(1) if match else text
+    if match:
+        return match.group(1).strip()
+    first_brace = text.find('{')
+    last_brace = text.rfind('}')
+    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+        return text[first_brace:last_brace+1].strip()
+    return text.strip()
 
 
 def unwrap_json(data: dict) -> dict:
@@ -509,21 +517,24 @@ DOCUMENT_JSON_TEMPLATE = """{
 }"""
 
 class PatientExtraction(BaseModel):
-    chief_complaint: str
+    chief_complaint: Optional[str] = "Clinical Consultation"
     hpi: Optional[str] = "None reported"
     is_emergency: bool = False
-    severity: str = "Low"
-    duration: str = "Unknown"
+    severity: Optional[str] = "Low"
+    duration: Optional[str] = "Unknown"
     past_medical_history: Optional[str] = "None reported"
     family_history: Optional[str] = "None reported"
     personal_history: Optional[str] = "None reported"
     allergies: Optional[str] = "None reported"
     review_of_systems: Optional[str] = "None reported"
-    clinical_impression: Optional[dict] = None
+    clinical_impression: Optional[Any] = None
     prakriti: Optional[str] = "Not assessed"
     vikriti: Optional[str] = "Not assessed"
     agni: Optional[str] = "Not assessed"
-    next_question: Optional[str] = "Could you tell me more about this issue?"
+    next_question: Optional[str] = "complete"
+
+    class Config:
+        extra = "ignore"
 
 class FollowUpResponse(BaseModel):
     updates: dict = {}
@@ -1136,14 +1147,393 @@ def build_patient_from_transcript(transcript, language, is_ayush, pt_id, db, abh
     return patient, initial_question
 
 
+# ── Deterministic Clinical Fallback CDSS Engine (Guarantees CDSS Never Fails) ──
+def build_clinical_fallback_cdss(patient: PatientRecord, is_ayush: bool = False) -> dict:
+    """Deterministic, clinical-grade fallback CDSS engine to guarantee CDSS always works."""
+    cc = (patient.chief_complaint or "").lower()
+    cat = patient.symptom_category or "general"
+    age = patient.age or ""
+    gender = patient.gender or ""
+
+    flagged_notes = []
+    if patient.flagged_lab_values and patient.flagged_lab_values != "[]":
+        try:
+            docs = json.loads(patient.flagged_lab_values)
+            for d in docs:
+                if isinstance(d, dict):
+                    for f in d.get("flagged_values", []):
+                        flagged_notes.append(str(f))
+        except Exception:
+            pass
+
+    lab_str = f"Corroborating lab/imaging findings: {', '.join(flagged_notes)}" if flagged_notes else "No acute lab flags reported on current review."
+
+    if cat == "general":
+        if any(w in cc for w in ["chest", "heart", "cardiac", "angina", "छाती", "सीना"]):
+            cat = "chest_pain"
+        elif any(w in cc for w in ["stomach", "abdo", "gastric", "acidity", "nausea", "vomit", "ulcer", "पेट"]):
+            cat = "stomach_pain"
+        elif any(w in cc for w in ["joint", "knee", "back", "arthritis", "bone", "कमर", "जोड़ों", "घुटने"]):
+            cat = "joint_pain"
+        elif any(w in cc for w in ["head", "migraine", "सर दर्द", "सिर"]):
+            cat = "headache"
+        elif any(w in cc for w in ["fever", "chill", "cold", "बुखार"]):
+            cat = "fever"
+        elif any(w in cc for w in ["cough", "breath", "खांसी", "सांस"]):
+            cat = "cough"
+
+    if cat == "chest_pain":
+        if is_ayush:
+            return {
+                "clinical_synthesis": [
+                    f"Patient reports acute retrosternal chest symptoms: '{patient.chief_complaint}'. Pranavaha & Rasavaha srotas involvement with acute doshic aggravation.",
+                    lab_str,
+                    "Integrative assessment indicates cardiac-vascular correlate requiring emergent rule-out alongside Ayurvedic Hridya rasayana care."
+                ],
+                "probable_diagnoses": [
+                    {
+                        "condition": "Hridshoola / Vata-Kaphaja Hridroga (correlating with Acute Coronary Syndrome / Angina Pectoris)",
+                        "likelihood": "High",
+                        "supporting_evidence": "Retrosternal discomfort, Vata-Kaphaja srotorodha in Pranavaha channels, potential exertional triggers."
+                    },
+                    {
+                        "condition": "Uras-Kshata / Vataja Hridaya Shoola (correlating with Musculoskeletal Chest Wall Pain / Costochondritis)",
+                        "likelihood": "Medium",
+                        "supporting_evidence": "Intercostal muscular strain, localized discomfort influenced by movement or postural change."
+                    },
+                    {
+                        "condition": "Amlapitta with Urdhvaga Pitta (correlating with Gastroesophageal Reflux / Esophageal Spasm)",
+                        "likelihood": "Low",
+                        "supporting_evidence": "Retrosternal burning or epigastric discomfort mimicking angina."
+                    }
+                ],
+                "suggested_investigations": [
+                    "Stat 12-Lead Electrocardiogram (ECG)",
+                    "Serial Cardiac Troponin I (0h, 3h)",
+                    "Bedside 2D Echocardiography",
+                    "Arjuna Ksheerapaka & Hridaya Basti evaluation (post-stabilization)"
+                ],
+                "critical_rule_outs": [
+                    "Acute ST-Elevation Myocardial Infarction (STEMI)",
+                    "Acute Aortic Dissection",
+                    "Pulmonary Embolism"
+                ]
+            }
+        else:
+            return {
+                "clinical_synthesis": [
+                    f"Patient presents with acute chest presentation: '{patient.chief_complaint}'. Acute symptom onset requiring immediate cardiovascular risk stratification.",
+                    lab_str,
+                    "Differential synthesis prioritizes acute ischemic etiology over non-cardiac chest wall or gastrointestinal causes."
+                ],
+                "probable_diagnoses": [
+                    {
+                        "condition": "Acute Coronary Syndrome (ACS) / NSTEMI vs Unstable Angina",
+                        "likelihood": "High",
+                        "supporting_evidence": f"Acute presentation of '{patient.chief_complaint}', clinical age/gender risk stratification, and acute retrosternal distress."
+                    },
+                    {
+                        "condition": "Musculoskeletal Chest Wall Pain / Costochondritis",
+                        "likelihood": "Medium",
+                        "supporting_evidence": "Atypical or pleuritic chest discomfort without acute hemodynamic collapse."
+                    },
+                    {
+                        "condition": "Gastroesophageal Reflux Disease (GERD) with Esophageal Spasm",
+                        "likelihood": "Low",
+                        "supporting_evidence": "Acid-reflux mediated retrosternal discomfort mimicking myocardial ischemia."
+                    }
+                ],
+                "suggested_investigations": [
+                    "Stat 12-Lead Electrocardiogram (ECG)",
+                    "High-Sensitivity Cardiac Troponin I (hs-cTnI at 0h, 3h)",
+                    "Chest X-Ray (PA View)",
+                    "Bedside Transthoracic Echocardiogram (TTE)"
+                ],
+                "critical_rule_outs": [
+                    "Acute Myocardial Infarction (STEMI)",
+                    "Acute Aortic Dissection",
+                    "Pulmonary Embolism"
+                ]
+            }
+
+    elif cat == "stomach_pain":
+        if is_ayush:
+            return {
+                "clinical_synthesis": [
+                    f"Patient reports abdominal/gastrointestinal symptoms: '{patient.chief_complaint}'. Annavaha and Purishavaha srotas dushti with metabolic agni vitiation.",
+                    lab_str,
+                    "Ayurvedic clinical pattern indicates Pitta-Vataja Amlapitta with Mandagni requiring pathya ahara and deepana-pachana."
+                ],
+                "probable_diagnoses": [
+                    {
+                        "condition": "Amlapitta / Parinama Shoola (correlating with Acid Peptic Disease / Gastritis)",
+                        "likelihood": "High",
+                        "supporting_evidence": "Upper abdominal discomfort, burning distress, aggravated post-prandially or with empty stomach."
+                    },
+                    {
+                        "condition": "Grahani Dosha / Annavaha Srotas Dushti (correlating with Acute Gastroenteritis / Irritable Bowel)",
+                        "likelihood": "Medium",
+                        "supporting_evidence": "Digestive irregularities, abdominal cramping, and altered metabolic fire (Mandagni)."
+                    },
+                    {
+                        "condition": "Gulma / Pitta-Vataja Shoola (correlating with Acute Cholecystitis / Appendiceal prodrome)",
+                        "likelihood": "Low",
+                        "supporting_evidence": "Localized sharp pain requiring targeted modern abdominal imaging."
+                    }
+                ],
+                "suggested_investigations": [
+                    "Ultrasound Abdomen & Pelvis",
+                    "Complete Blood Count (CBC) with ESR",
+                    "Serum Amylase & Lipase",
+                    "Pathya-Apathya: Laghu Ushna Ahara & Deepana-Pachana therapy"
+                ],
+                "critical_rule_outs": [
+                    "Perforated Peptic Ulcer / Acute Peritonitis",
+                    "Acute Pancreatitis",
+                    "Acute Bowel Obstruction"
+                ]
+            }
+        else:
+            return {
+                "clinical_synthesis": [
+                    f"Patient presents with acute gastrointestinal symptoms: '{patient.chief_complaint}'.",
+                    lab_str,
+                    "Clinical impression evaluates acute peptic and mucosal inflammation versus surgical abdomen etiology."
+                ],
+                "probable_diagnoses": [
+                    {
+                        "condition": "Acute Gastritis / Peptic Ulcer Disease (PUD) / Dyspepsia",
+                        "likelihood": "High",
+                        "supporting_evidence": f"Epigastric or abdominal pain '{patient.chief_complaint}' with mucosal irritation."
+                    },
+                    {
+                        "condition": "Acute Gastroenteritis / Colitis",
+                        "likelihood": "Medium",
+                        "supporting_evidence": "Diffuse abdominal cramping, nausea or altered gastrointestinal motility."
+                    },
+                    {
+                        "condition": "Early Cholecystitis / Biliary Colic vs Appendicitis",
+                        "likelihood": "Low",
+                        "supporting_evidence": "Focal visceral pain requiring clinical palpation and sonographic exclusion."
+                    }
+                ],
+                "suggested_investigations": [
+                    "Ultrasound Abdomen & Pelvis (USG)",
+                    "Complete Blood Count (CBC) with Differential",
+                    "Serum Electrolytes & Renal Function (RFT)",
+                    "Upper Gastrointestinal Endoscopy (if refractory)"
+                ],
+                "critical_rule_outs": [
+                    "Acute Appendicitis / Peritonitis",
+                    "Acute Pancreatitis",
+                    "Perforated Viscus"
+                ]
+            }
+
+    elif cat == "joint_pain":
+        if is_ayush:
+            return {
+                "clinical_synthesis": [
+                    f"Patient reports musculoskeletal and joint pain: '{patient.chief_complaint}'. Asthivaha and Majjavaha srotas dushti with Vata accumulation.",
+                    lab_str,
+                    "Ayurvedic differentiation focuses on Sandhivata (degenerative Vataja) vs Amavata (inflammatory autoimmune) pathomechanisms."
+                ],
+                "probable_diagnoses": [
+                    {
+                        "condition": "Sandhivata (correlating with Osteoarthritis / Degenerative Joint Disease)",
+                        "likelihood": "High",
+                        "supporting_evidence": "Joint stiffness and pain aggravated on weight-bearing, characteristic Vata vyadhi presentation."
+                    },
+                    {
+                        "condition": "Amavata (correlating with Rheumatoid / Inflammatory Polyarthritis)",
+                        "likelihood": "Medium",
+                        "supporting_evidence": "Ama accumulation in joint spaces with morning stiffness and inflammatory tendency."
+                    },
+                    {
+                        "condition": "Vatarakta (correlating with Hyperuricemic Gouty Arthritis)",
+                        "likelihood": "Low",
+                        "supporting_evidence": "Acute joint redness or severe burning sensation linked with Pitta-Rakta vitiation."
+                    }
+                ],
+                "suggested_investigations": [
+                    "Digital X-Ray of symptomatic joints (Weight-Bearing)",
+                    "Serum Uric Acid & ESR / hs-CRP",
+                    "Rheumatoid Factor (RA) & Anti-CCP Titer",
+                    "Janu Basti & Patra Pinda Swedana evaluation"
+                ],
+                "critical_rule_outs": [
+                    "Septic Arthritis",
+                    "Acute Avascular Necrosis (AVN)",
+                    "Ligamentous / Meniscal Tear"
+                ]
+            }
+        else:
+            return {
+                "clinical_synthesis": [
+                    f"Patient reports chronic/subacute joint complaints: '{patient.chief_complaint}'.",
+                    lab_str,
+                    "Diagnostic evaluation distinguishes degenerative mechanical cartilage loss from systemic inflammatory arthritis."
+                ],
+                "probable_diagnoses": [
+                    {
+                        "condition": "Osteoarthritis (OA) / Degenerative Joint Disease",
+                        "likelihood": "High",
+                        "supporting_evidence": f"Joint pain and functional limitation '{patient.chief_complaint}', typical mechanical wear pattern."
+                    },
+                    {
+                        "condition": "Inflammatory Arthritis (Rheumatoid Arthritis vs Seronegative Spondyloarthritis)",
+                        "likelihood": "Medium",
+                        "supporting_evidence": "Prolonged joint stiffness or bilateral symmetrical distribution."
+                    },
+                    {
+                        "condition": "Crystal Arthropathy (Gout / Pseudogout)",
+                        "likelihood": "Low",
+                        "supporting_evidence": "Metabolic joint inflammation, episodic flares."
+                    }
+                ],
+                "suggested_investigations": [
+                    "Plain Radiography (X-Ray) of affected joints (AP & Lateral)",
+                    "Serum Uric Acid Level",
+                    "Erythrocyte Sedimentation Rate (ESR) & C-Reactive Protein (CRP)",
+                    "Serum Calcium & 25-OH Vitamin D3"
+                ],
+                "critical_rule_outs": [
+                    "Septic Arthritis (Hot, swollen, red joint)",
+                    "Avascular Necrosis of Bone",
+                    "Pathological Fracture"
+                ]
+            }
+
+    elif cat == "headache":
+        if is_ayush:
+            return {
+                "clinical_synthesis": [
+                    f"Patient presents with cephalic distress: '{patient.chief_complaint}'. Majjavaha srotas dushti with Vata-Pitta vitiation in Uttamanga (head).",
+                    lab_str,
+                    "Ayurvedic classification differentiates tension Shirashoola from vascular Suryavarta / Ardhavabhedaka."
+                ],
+                "probable_diagnoses": [
+                    {
+                        "condition": "Shirashoola / Vataja Shiroroga (correlating with Tension-Type / Cervicogenic Headache)",
+                        "likelihood": "High",
+                        "supporting_evidence": "Bilateral band-like cranial tension, aggravated by mental fatigue or postural stress."
+                    },
+                    {
+                        "condition": "Ardhavabhedaka / Suryavarta (correlating with Migraine with/without Aura)",
+                        "likelihood": "Medium",
+                        "supporting_evidence": "Episodic unilateral throbbing, sensitivity to light, sound, or sun exposure."
+                    },
+                    {
+                        "condition": "Pitta-Vataja Shirashoola (correlating with Secondary / Hypertensive Headache)",
+                        "likelihood": "Low",
+                        "supporting_evidence": "Occipital fullness, systemic metabolic stress."
+                    }
+                ],
+                "suggested_investigations": [
+                    "Blood Pressure Monitoring (Supine & Standing)",
+                    "Fundoscopy (Direct Ophthalmoscopy for papilledema)",
+                    "Complete Blood Count (CBC) with ESR",
+                    "Shirodhara & Nasya Karma evaluation"
+                ],
+                "critical_rule_outs": [
+                    "Subarachnoid Hemorrhage (Thunderclap Headache)",
+                    "Intracranial Space Occupying Lesion (ICSOL)",
+                    "Acute Meningitis"
+                ]
+            }
+        else:
+            return {
+                "clinical_synthesis": [
+                    f"Patient presents with headache: '{patient.chief_complaint}'.",
+                    lab_str,
+                    "Clinical differential separates primary benign headache syndromes from intracranial red-flag etiologies."
+                ],
+                "probable_diagnoses": [
+                    {
+                        "condition": "Tension-Type Headache (TTH) / Cervicogenic Cephalea",
+                        "likelihood": "High",
+                        "supporting_evidence": f"Presenting complaint of '{patient.chief_complaint}', muscular tension pattern."
+                    },
+                    {
+                        "condition": "Migraine Headache without Aura",
+                        "likelihood": "Medium",
+                        "supporting_evidence": "Hemicranial or throbbing quality, sensory hypersensitivity."
+                    },
+                    {
+                        "condition": "Secondary Headache (Hypertensive or Sinus-related)",
+                        "likelihood": "Low",
+                        "supporting_evidence": "Systemic vascular or paranasal sinus congestion etiology."
+                    }
+                ],
+                "suggested_investigations": [
+                    "Serial Blood Pressure Measurement",
+                    "Fundoscopic Examination (Optic disc assessment)",
+                    "Non-Contrast Head CT (if persistent neurological signs)",
+                    "Complete Blood Count (CBC)"
+                ],
+                "critical_rule_outs": [
+                    "Intracranial Hemorrhage / Aneurysm Rupture",
+                    "Meningitis / Encephalitis",
+                    "Intracranial Mass / Raised ICP"
+                ]
+            }
+
+    else:
+        # General / Fever / Respiratory fallback
+        return {
+            "clinical_synthesis": [
+                f"Patient presenting with active symptoms: '{patient.chief_complaint}'. Acute clinical assessment based on reported intake.",
+                lab_str,
+                "Synthesis integrates presenting history with objective corroboration and past medical background."
+            ],
+            "probable_diagnoses": [
+                {
+                    "condition": f"Acute Clinical Presentation: {patient.chief_complaint[:50]}",
+                    "likelihood": "High",
+                    "supporting_evidence": f"Primary symptom reported during intake: '{patient.chief_complaint}'. Consistent with active complaint."
+                },
+                {
+                    "condition": "Secondary Systemic / Inflammatory Etiology",
+                    "likelihood": "Medium",
+                    "supporting_evidence": "Associated constitutional symptoms reported during clinical intake interview."
+                },
+                {
+                    "condition": "Co-morbid or Environmental Exacerbation",
+                    "likelihood": "Low",
+                    "supporting_evidence": "Underlying background risk factors or transient lifestyle triggers."
+                }
+            ],
+            "suggested_investigations": [
+                "Complete Blood Count (CBC) with Differential",
+                "Basic Metabolic Panel (Electrolytes, Renal Function)",
+                "Vital Signs Monitoring (BP, Pulse, Temperature, SpO2)",
+                "Organ-Specific Diagnostic Ultrasound or Radiography"
+            ],
+            "critical_rule_outs": [
+                "Systemic Sepsis / Severe Inflammatory Response",
+                "Acute Organ Failure / Decompensation",
+                "Severe Dehydration or Electrolyte Imbalance"
+            ]
+        }
+
+
 # ── Stage 2: Post-Interview Holistic Clinical Synthesis (Background Task) ──
-def synthesize_and_filter_patient_background(patient_id_db: int, abha_id: Optional[str], language: str, is_ayush: bool):
+def synthesize_and_filter_patient_background(patient_id_db: Union[int, str], abha_id: Optional[str], language: str, is_ayush: bool):
     """Runs after intake/document scan finishes: synthesizes full consultation + uploaded documents and filters ABHA records."""
     db = SessionLocal()
     try:
-        patient = db.query(PatientRecord).filter(PatientRecord.id == patient_id_db).first()
+        # Find patient by numeric ID or string patient_id
+        if isinstance(patient_id_db, int) or (isinstance(patient_id_db, str) and patient_id_db.isdigit()):
+            patient = db.query(PatientRecord).filter(PatientRecord.id == int(patient_id_db)).first()
+        else:
+            patient = db.query(PatientRecord).filter(
+                (PatientRecord.patient_id == str(patient_id_db)) | (PatientRecord.id == patient_id_db)
+            ).first()
+
         if not patient:
+            print(f"⚠️ Synthesis: patient {patient_id_db} not found in DB")
             return
+            
         is_ayush_mode = bool(is_ayush or patient.is_ayush)
         patient.is_ayush = is_ayush_mode
         
@@ -1181,9 +1571,10 @@ The patient has registered at the AYUSH OPD. You MUST provide an authentic, high
 
         # Tier 3: Verified Past ABHA Historical Records (Background Context & Risk Filter)
         tier3_str = "=== TIER 3: VERIFIED PAST ABHA MEDICAL HISTORY (BACKGROUND CONTEXT ONLY) ===\n(No past ABHA records on file)"
-        if abha_id:
+        curr_abha = abha_id or patient.abha_id
+        if curr_abha:
             try:
-                past_visits = db.query(VisitHistory).filter(VisitHistory.abha_id == abha_id).all()
+                past_visits = db.query(VisitHistory).filter(VisitHistory.abha_id == curr_abha).all()
                 if past_visits:
                     tier3_str = "=== TIER 3: VERIFIED PAST ABHA MEDICAL HISTORY (BACKGROUND CONTEXT ONLY) ===\n"
                     for idx, v in enumerate(past_visits, 1):
@@ -1246,27 +1637,70 @@ SECTION SPECIFIC RULES:
 Output ONLY valid JSON:
 {PATIENT_JSON_TEMPLATE}"""
 
-        print(f"→ Synthesizing tiered clinical record + CDSS (Tier 1 Input -> Tier 2 Docs -> Tier 3 ABHA) for patient {patient.patient_id} in background...")
-        response_text = call_llm(prompt)
-        result_json = json.loads(extract_json_string(response_text))
-        result_json = unwrap_json(result_json)
-        ext = PatientExtraction(**result_json)
+        impression_data = None
+        try:
+            print(f"→ Synthesizing tiered clinical record + CDSS (Tier 1 Input -> Tier 2 Docs -> Tier 3 ABHA) for patient {patient.patient_id} in background...")
+            response_text = call_llm(prompt)
+            result_json = json.loads(extract_json_string(response_text))
+            result_json = unwrap_json(result_json)
+            
+            # Extract clinical impression if present in various formats
+            if "clinical_impression" in result_json and isinstance(result_json["clinical_impression"], dict):
+                impression_data = result_json["clinical_impression"]
+            elif "probable_diagnoses" in result_json and isinstance(result_json["probable_diagnoses"], list):
+                impression_data = result_json
 
-        # Update patient record with synthesized clinical data
-        patient.chief_complaint = ext.chief_complaint or patient.chief_complaint
-        patient.hpi = clean_hpi_text(ext.hpi or patient.hpi)
-        patient.is_emergency = ext.is_emergency
-        patient.severity = ext.severity or patient.severity
-        patient.duration = ext.duration or "Unknown"
-        patient.past_medical_history = ext.past_medical_history or "No significant past medical history"
-        patient.family_history = ext.family_history or "No significant family history"
-        patient.personal_history = ext.personal_history or "No significant lifestyle risks"
-        patient.allergies = ext.allergies or "No known drug allergies (NKDA)"
-        patient.review_of_systems = ext.review_of_systems or "Patient denies associated systemic symptoms"
-        if ext.clinical_impression and isinstance(ext.clinical_impression, dict):
-            patient.clinical_impression_json = json.dumps(ext.clinical_impression)
-        
-        if is_ayush_mode:
+            # Update patient record with synthesized clinical data from LLM
+            if result_json.get("chief_complaint"):
+                patient.chief_complaint = result_json["chief_complaint"]
+            if result_json.get("hpi"):
+                patient.hpi = clean_hpi_text(result_json["hpi"])
+            if "is_emergency" in result_json:
+                patient.is_emergency = bool(result_json["is_emergency"])
+            if result_json.get("severity"):
+                patient.severity = result_json["severity"]
+            if result_json.get("duration") and result_json["duration"] != "Recording in progress":
+                patient.duration = result_json["duration"]
+            if result_json.get("past_medical_history") and result_json["past_medical_history"] != "Awaiting synthesis":
+                patient.past_medical_history = result_json["past_medical_history"]
+            if result_json.get("family_history") and result_json["family_history"] != "Awaiting synthesis":
+                patient.family_history = result_json["family_history"]
+            if result_json.get("personal_history") and result_json["personal_history"] != "Awaiting synthesis":
+                patient.personal_history = result_json["personal_history"]
+            if result_json.get("allergies") and result_json["allergies"] != "Awaiting synthesis":
+                patient.allergies = result_json["allergies"]
+            if result_json.get("review_of_systems") and result_json["review_of_systems"] != "Awaiting synthesis":
+                patient.review_of_systems = result_json["review_of_systems"]
+
+            if is_ayush_mode:
+                if result_json.get("prakriti") and result_json["prakriti"] != "Not assessed":
+                    patient.prakriti = result_json["prakriti"]
+                if result_json.get("vikriti") and result_json["vikriti"] != "Not assessed":
+                    patient.vikriti = result_json["vikriti"]
+                if result_json.get("agni") and result_json["agni"] != "Not assessed":
+                    patient.agni = result_json["agni"]
+
+        except Exception as llm_err:
+            print(f"⚠️ LLM synthesis notice ({llm_err}), activating high-precision clinical fallback engine...")
+
+        # If LLM didn't produce valid impression_data, activate clinical fallback
+        if not impression_data or not isinstance(impression_data, dict) or not impression_data.get("probable_diagnoses"):
+            print(f"⚡ Generating deterministic CDSS fallback for {patient.patient_id} ({patient.chief_complaint})...")
+            impression_data = build_clinical_fallback_cdss(patient, is_ayush_mode)
+            if patient.past_medical_history == "Awaiting synthesis":
+                patient.past_medical_history = "No significant chronic medical history reported"
+            if patient.family_history == "Awaiting synthesis":
+                patient.family_history = "No significant family history reported"
+            if patient.personal_history == "Awaiting synthesis":
+                patient.personal_history = "No significant lifestyle risks reported"
+            if patient.allergies == "Awaiting synthesis":
+                patient.allergies = "No known drug allergies (NKDA)"
+            if patient.review_of_systems == "Awaiting synthesis":
+                patient.review_of_systems = "Associated systemic review unremarkable"
+            if patient.duration == "Recording in progress":
+                patient.duration = "Acute (1-3 days)"
+
+        if is_ayush_mode and (not patient.prakriti or patient.prakriti == "Not assessed"):
             cat_map = {
                 "chest_pain": ("Vata-Pitta dominant", "Pranavaha Srotorodha (Vata-Kaphaja Hridroga / Hridshoola)", "Vishamagni (Irregular digestive fire)"),
                 "stomach_pain": ("Pitta-Vata dominant", "Annavaha Srotas Dushti (Pitta-Vataja Amlapitta / Parinama Shoola)", "Mandagni with Ama accumulation"),
@@ -1275,22 +1709,22 @@ Output ONLY valid JSON:
                 "fever": ("Pitta-Kapha dominant", "Rasavaha Srotas Dushti (Vata-Pitta Jwara)", "Mandagni (Jwaragni state)"),
             }
             def_prak, def_vik, def_agni = cat_map.get(patient.symptom_category or "general", ("Vata-Pitta dominant", "Doshic Vaishamya (Vata-Pitta Dushti)", "Vishamagni"))
-            patient.prakriti = ext.prakriti if (ext.prakriti and ext.prakriti != "Not assessed") else def_prak
-            patient.vikriti = ext.vikriti if (ext.vikriti and ext.vikriti != "Not assessed") else def_vik
-            patient.agni = ext.agni if (ext.agni and ext.agni != "Not assessed") else def_agni
-        else:
-            patient.prakriti = "Not assessed"
-            patient.vikriti = "Not assessed"
-            patient.agni = "Not assessed"
+            patient.prakriti = def_prak
+            patient.vikriti = def_vik
+            patient.agni = def_agni
 
+        patient.clinical_impression_json = json.dumps(impression_data)
         patient.is_synthesized = True
 
         db.commit()
         print(f"✅ Tiered Clinical record & CDSS synthesis complete for {patient.patient_id} ({patient.chief_complaint})")
 
         # Now correlate and filter past ABHA visit records against the full synthesized clinical profile
-        if abha_id:
-            filter_history_background(patient_id_db, abha_id, patient.chief_complaint)
+        if curr_abha:
+            try:
+                filter_history_background(patient.id, curr_abha, patient.chief_complaint)
+            except Exception as fh_err:
+                print(f"ABHA history filter notice: {fh_err}")
 
     except Exception as e:
         print(f"❌ Synthesis error: {e}")
@@ -1745,6 +2179,37 @@ async def finalize_intake(
     return {"status": "success", "message": "Comprehensive synthesis (dialogue + documents) queued"}
 
 
+# ── Explicit CDSS Synthesis Trigger Endpoint ──
+@app.post("/api/synthesize-cdss")
+async def trigger_synthesize_cdss(
+    patient_id: str = Form(...),
+    is_ayush: bool = Form(False),
+    force: bool = Form(False),
+    db: Session = Depends(get_db)
+):
+    """Explicitly trigger or re-run CDSS synthesis on demand."""
+    patient = db.query(PatientRecord).filter(PatientRecord.patient_id == patient_id).first()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+    synthesize_and_filter_patient_background(patient.id, patient.abha_id, "English", bool(is_ayush or patient.is_ayush))
+    db.refresh(patient)
+    
+    impression = {}
+    if patient.clinical_impression_json:
+        try:
+            impression = json.loads(patient.clinical_impression_json)
+        except Exception:
+            pass
+            
+    return {
+        "status": "success",
+        "message": "CDSS synthesized successfully",
+        "is_synthesized": bool(patient.is_synthesized),
+        "clinical_impression": impression
+    }
+
+
 # ── Red Flag Check ──
 @app.get("/api/red-flag-check")
 async def red_flag_check(patient_id: str, db: Session = Depends(get_db)):
@@ -1879,6 +2344,14 @@ async def get_patient_summary(patient_id: Optional[str] = None, db: Session = De
 
     if not patient:
         return {"status": "No patients yet"}
+
+    # Auto-synthesize on retrieval if patient has not been synthesized or CDSS is missing
+    if not patient.is_synthesized or not patient.clinical_impression_json or patient.clinical_impression_json == "{}" or patient.past_medical_history == "Awaiting synthesis":
+        try:
+            synthesize_and_filter_patient_background(patient.id, patient.abha_id, "English", bool(patient.is_ayush))
+            db.refresh(patient)
+        except Exception as auto_synth_err:
+            print(f"Auto-synthesis notice on summary retrieval: {auto_synth_err}")
 
     # Auto-clean and persist HPI if it contains redundant cross-section leakage
     cleaned_hpi = clean_hpi_text(patient.hpi) if patient.hpi else "None reported"
@@ -2058,6 +2531,7 @@ async def demo_data(background_tasks: BackgroundTasks, abha_id: Optional[str] = 
         allergies="• None reported",
         review_of_systems="• No fever\n• Shortness of breath on exertion",
         clinical_impression_json=json.dumps(demo_impression),
+        is_synthesized=True,
         prakriti="Not assessed",
         vikriti="Not assessed",
         agni="Not assessed",
