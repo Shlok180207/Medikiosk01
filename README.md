@@ -1,4 +1,4 @@
-# 🏥 MediKiosk v2 — AI Clinical Intake System
+# 🏥 MediKiosk v5 — AI Clinical Intake System
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Shlok180207/Medikiosk01/blob/main/run_medikiosk.ipynb)
 ![License](https://img.shields.io/badge/License-MIT-blue.svg)
@@ -6,7 +6,7 @@
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-green)
 ![React](https://img.shields.io/badge/React-18-61dafb)
 
-**MediKiosk v2** is a multimodal clinical intake system designed for hospital outpatient departments (OPD). It conducts multilingual voice consultations, performs clinical reasoning, detects emergency red flags, scans medical reports via vision models, and prepares structured medical summaries for attending physicians.
+**MediKiosk v5** is a multimodal clinical intake system designed for hospital outpatient departments (OPD). It conducts multilingual voice consultations, performs clinical reasoning, detects emergency red flags, scans medical reports via vision models, and prepares structured medical summaries for attending physicians.
 
 ---
 

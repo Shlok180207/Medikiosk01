@@ -1,6 +1,6 @@
 """
-MediKiosk v2 — AI-Powered Clinical Intake Backend
-100% Offline: Whisper (STT) + Ollama qwen2.5:3b (NLP) + llama3.2-vision (OCR)
+MediKiosk v5 — AI-Powered Clinical Intake Backend
+100% Offline: Whisper (STT) + Ollama qwen2.5 (NLP) + moondream (Vision OCR)
 """
 
 from fastapi import FastAPI, Request, UploadFile, File, Depends, HTTPException, Form, BackgroundTasks
@@ -607,7 +607,7 @@ def get_db():
 
 
 # ── FastAPI App ──
-app = FastAPI(title="MediKiosk v2 API")
+app = FastAPI(title="MediKiosk v5 API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -1294,7 +1294,7 @@ Output ONLY valid JSON:
 
 @app.get("/")
 async def root():
-    return {"message": "MediKiosk v2 Backend running (Offline Mode)"}
+    return {"message": "MediKiosk v5 Backend running (Offline Mode)"}
 
 
 # ── ABHA Master Profiles Endpoint ──
@@ -2062,5 +2062,5 @@ async def demo_data(background_tasks: BackgroundTasks, abha_id: Optional[str] = 
 
 
 if __name__ == "__main__":
-    print("🏥 Starting MediKiosk v2 Backend (Offline Mode)...")
+    print("🏥 Starting MediKiosk v5 Backend (Offline Mode)...")
     uvicorn.run(app, host="0.0.0.0", port=8000)
