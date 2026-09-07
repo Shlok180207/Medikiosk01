@@ -359,156 +359,427 @@ export default function Kiosk() {
 
   // ── Quick Symptom Buttons ──
   const quickSymptoms = [
-    { label: t('fever'), value: 'I have fever and chills' },
-    { label: t('chest_pain'), value: 'I have chest pain' },
-    { label: t('stomach'), value: 'I have stomach pain and nausea' },
-    { label: t('cough'), value: 'I have continuous cough' },
-    { label: t('joint_pain'), value: 'I have joint pain and stiffness' },
-    { label: t('headache'), value: 'I have severe headache' },
+    { label: t('fever'), icon: '🤒', sub: 'Fever & chills', value: 'I have fever and chills' },
+    { label: t('chest_pain'), icon: '💔', sub: 'Chest discomfort', value: 'I have chest pain' },
+    { label: t('stomach'), icon: '🤢', sub: 'Abdominal pain', value: 'I have stomach pain and nausea' },
+    { label: t('cough'), icon: '🫁', sub: 'Persistent cough', value: 'I have continuous cough' },
+    { label: t('joint_pain'), icon: '🦴', sub: 'Joint & bone pain', value: 'I have joint pain and stiffness' },
+    { label: t('headache'), icon: '🤕', sub: 'Severe headache', value: 'I have severe headache' },
   ];
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', background: 'var(--color-bg)' }}>
-
-      {/* Header */}
+    <div style={{
+      display: 'flex',
+      justifyContent: 'center',
+      alignItems: 'stretch',
+      minHeight: '100vh',
+      width: '100vw',
+      background: 'linear-gradient(180deg, #f1f5f9 0%, #e2e8f0 100%)',
+      padding: '0'
+    }}>
+      {/* ═══ Centered Kiosk Terminal Console ═══ */}
       <div style={{
-        padding: 'var(--space-4) var(--space-6)',
-        background: 'var(--color-surface)',
-        borderBottom: '1px solid var(--color-border)',
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between'
+        width: '100%',
+        maxWidth: '860px',
+        height: '100vh',
+        background: '#ffffff',
+        display: 'flex',
+        flexDirection: 'column',
+        boxShadow: '0 10px 40px rgba(0,0,0,0.08)',
+        borderLeft: '1px solid #cbd5e1',
+        borderRight: '1px solid #cbd5e1',
+        position: 'relative'
       }}>
-        <div>
-          <h3 style={{ fontSize: 'var(--font-size-lg)', fontWeight: 700, color: 'var(--color-text)' }}>
-            🏥 {t('kiosk_title')}
-          </h3>
-          <span className="caption">
-            {languageLabel} • {isAyush ? t('ayush_opd') : t('allo_opd')} •
-            Phase: {conversationPhase.toUpperCase()}
-          </span>
-        </div>
-        <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center' }}>
-          {patientId && <span className="badge badge-info">{patientId}</span>}
-          <button className="btn btn-outline btn-sm" onClick={handleSkipDemo} disabled={isProcessing}>
-            Skip (Demo)
-          </button>
-        </div>
-      </div>
 
-      {/* Progress Bar */}
-      <div style={{ padding: '0 var(--space-6)', background: 'var(--color-surface)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)', padding: 'var(--space-2) 0 var(--space-3)' }}>
-          <div className="progress-bar" style={{ flex: 1 }}>
-            <div className="progress-bar-fill" style={{ width: `${progress}%` }} />
-          </div>
-          <span className="caption" style={{ fontWeight: 600, whiteSpace: 'nowrap' }}>
-            {t('clinical_history')}: {progress}%
-          </span>
-        </div>
-      </div>
-
-      {/* Chat Messages */}
-      <div className="chat-container" style={{ flex: 1, overflowY: 'auto', padding: 'var(--space-4) var(--space-6)' }}>
-        {messages.map((msg, i) => (
-          <div key={i} className={`chat-bubble chat-bubble-${msg.type}`}>
-            {msg.type === 'bot' && (
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--space-1)' }}>
-                <div style={{ fontSize: 'var(--font-size-xs)', fontWeight: 600, color: 'var(--color-primary)' }}>
-                  🏥 MediKiosk AI
-                </div>
-                {msg.text !== 'Processing...' && msg.text !== 'Listening...' && (
-                  <button
-                    onClick={() => speakText(msg.text)}
-                    style={{
-                      background: 'none', border: 'none', cursor: 'pointer',
-                      fontSize: 'var(--font-size-lg)', padding: '2px 6px',
-                      borderRadius: 'var(--radius-sm)', opacity: 0.7,
-                      transition: 'opacity 0.2s'
-                    }}
-                    onMouseEnter={e => e.target.style.opacity = 1}
-                    onMouseLeave={e => e.target.style.opacity = 0.7}
-                    title="Replay audio"
-                  >
-                    🔊
-                  </button>
+        {/* ── Top Header Bar ── */}
+        <div style={{
+          padding: '12px 20px',
+          background: '#ffffff',
+          borderBottom: '1px solid #e2e8f0',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: '10px'
+        }}>
+          {/* Brand & Patient Identification */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <div style={{
+              width: 36, height: 36, borderRadius: '8px',
+              background: 'linear-gradient(135deg, #1d4ed8, #2563eb)',
+              color: '#ffffff', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: '18px', fontWeight: 800, flexShrink: 0
+            }}>
+              +
+            </div>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--color-text)' }}>
+                  MediKiosk
+                </span>
+                <span style={{
+                  background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe',
+                  borderRadius: '12px', padding: '1px 8px', fontSize: '10px', fontWeight: 700
+                }}>
+                  AI Intake
+                </span>
+                <span style={{
+                  background: isAyush ? '#f0fdf4' : '#f8fafc',
+                  color: isAyush ? '#166534' : '#334155',
+                  border: `1px solid ${isAyush ? '#bbf7d0' : '#e2e8f0'}`,
+                  borderRadius: '12px', padding: '1px 8px', fontSize: '10px', fontWeight: 600
+                }}>
+                  {isAyush ? '🌿 AYUSH OPD' : '🩺 General OPD'}
+                </span>
+              </div>
+              <div style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginTop: '2px' }}>
+                {patient?.name ? (
+                  <span>
+                    👤 <strong>{patient.name}</strong>
+                    {patient.age ? ` (${patient.age}${patient.gender ? patient.gender.charAt(0).toUpperCase() : ''})` : ''}
+                    {patient.abhaId && <span style={{ fontFamily: 'monospace', marginLeft: '4px' }}>• ABHA: {patient.abhaId}</span>}
+                  </span>
+                ) : (
+                  <span>{languageLabel} • {t('kiosk_title')}</span>
                 )}
               </div>
-            )}
-            {msg.text === 'Processing...' ? (
-              <div className="flex items-center gap-2">
-                <div className="spinner" /> {t('processing')}
-              </div>
-            ) : (
-              <div style={{ whiteSpace: 'pre-wrap' }}>{msg.text}</div>
-            )}
+            </div>
           </div>
-        ))}
-        <div ref={chatEndRef} />
-      </div>
 
-      {/* Quick Symptoms (initial phase only) */}
-      {conversationPhase === 'initial' && !isProcessing && (
-        <div style={{ padding: 'var(--space-2) var(--space-6)', background: 'var(--color-surface)', borderTop: '1px solid var(--color-border)' }}>
-          <p className="caption mb-2">{t('tap_symptom')}</p>
-          <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
-            {quickSymptoms.map(s => (
-              <button key={s.value} className="btn btn-sm btn-secondary"
-                onClick={() => handleQuickAnswer(s.value)}
-                style={{ fontSize: 'var(--font-size-sm)' }}>
-                {s.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Quick Yes/No/Not Sure (follow-up phase) */}
-      {conversationPhase === 'follow-up' && !isProcessing && (
-        <div style={{ padding: 'var(--space-2) var(--space-6)', background: 'var(--color-surface)', borderTop: '1px solid var(--color-border)' }}>
-          <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-            <button className="btn btn-sm btn-success" onClick={() => handleQuickAnswer('Yes')} style={{ flex: 1 }}>
-              {t('yes')}
-            </button>
-            <button className="btn btn-sm btn-danger" onClick={() => handleQuickAnswer('No')} style={{ flex: 1 }}>
-              {t('no')}
-            </button>
-            <button className="btn btn-sm btn-secondary" onClick={() => handleQuickAnswer('Not sure')} style={{ flex: 1 }}>
-              {t('not_sure')}
+          {/* Right Status Actions */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <div style={{
+              display: 'flex', alignItems: 'center', gap: '5px',
+              background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '20px',
+              padding: '3px 10px', fontSize: '11px', color: '#334155', fontWeight: 600
+            }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#16a34a' }} />
+              🔊 Audio Active
+            </div>
+            <button
+              onClick={handleSkipDemo}
+              disabled={isProcessing}
+              style={{
+                background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '6px',
+                padding: '4px 10px', fontSize: '11px', fontWeight: 600, color: '#475569',
+                cursor: isProcessing ? 'not-allowed' : 'pointer', transition: 'all 0.15s ease'
+              }}
+              title="Skip triage with pre-populated demo data"
+            >
+              Skip (Demo)
             </button>
           </div>
         </div>
-      )}
 
-      {/* Input Area */}
-      {conversationPhase !== 'complete' && (
-        <div style={{
-          padding: 'var(--space-4) var(--space-6)',
-          background: 'var(--color-surface)',
-          borderTop: '1px solid var(--color-border)',
-          display: 'flex', alignItems: 'center', gap: 'var(--space-3)'
+        {/* ── Clinical Progress Strip ── */}
+        <div style={{ padding: '8px 20px', background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <span style={{
+                fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em',
+                color: conversationPhase === 'initial' ? '#1d4ed8' : '#64748b'
+              }}>
+                1. Chief Complaint
+              </span>
+              <span style={{ color: '#cbd5e1', fontSize: '10px' }}>→</span>
+              <span style={{
+                fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em',
+                color: conversationPhase === 'follow-up' ? '#1d4ed8' : '#64748b'
+              }}>
+                2. Details & HPI
+              </span>
+              <span style={{ color: '#cbd5e1', fontSize: '10px' }}>→</span>
+              <span style={{
+                fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em',
+                color: conversationPhase === 'complete' ? '#1d4ed8' : '#94a3b8'
+              }}>
+                3. Scan & Finish
+              </span>
+            </div>
+            <span style={{ fontSize: '11px', fontWeight: 700, color: '#1d4ed8' }}>
+              {progress}%
+            </span>
+          </div>
+          <div className="progress-bar" style={{ height: '6px' }}>
+            <div className="progress-bar-fill" style={{ width: `${progress}%` }} />
+          </div>
+        </div>
+
+        {/* ── Chat Messages Stream ── */}
+        <div className="chat-container" style={{
+          flex: 1, overflowY: 'auto', padding: '16px 20px',
+          display: 'flex', flexDirection: 'column', gap: '14px', background: '#f8fafc'
         }}>
-          <input
-            className="input"
-            placeholder={isRecording ? t('recording') : t('type_answer')}
-            value={textInput}
-            onChange={e => setTextInput(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && handleTextSubmit()}
-            disabled={isProcessing || isRecording}
-            style={{ flex: 1, minHeight: 48 }}
-          />
-          <button className="btn btn-primary btn-sm" onClick={handleTextSubmit}
-            disabled={!textInput.trim() || isProcessing} style={{ minWidth: 48 }}>
-            ➤
-          </button>
-          <button
-            className={`mic-btn ${isRecording ? 'recording' : ''}`}
-            onClick={handleMicClick}
-            disabled={isProcessing}
-            title={isRecording ? 'Stop recording' : 'Start recording'}
-          >
-            {isRecording ? '⏹' : '🎤'}
-          </button>
+          {messages.map((msg, i) => (
+            <div key={i} style={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: '10px',
+              alignSelf: msg.type === 'bot' ? 'flex-start' : 'flex-end',
+              maxWidth: msg.type === 'bot' ? '88%' : '80%',
+              flexDirection: msg.type === 'bot' ? 'row' : 'row-reverse'
+            }}>
+              {/* Avatar */}
+              <div style={{
+                width: 36, height: 36, borderRadius: '10px',
+                background: msg.type === 'bot' ? 'linear-gradient(135deg, #1d4ed8, #2563eb)' : '#334155',
+                color: '#ffffff', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: msg.type === 'bot' ? '18px' : '14px', flexShrink: 0,
+                boxShadow: msg.type === 'bot' ? '0 2px 6px rgba(29,78,216,0.2)' : 'none'
+              }}>
+                {msg.type === 'bot' ? '🩺' : '👤'}
+              </div>
+
+              {/* Bubble Body */}
+              <div style={{
+                background: msg.type === 'bot' ? '#ffffff' : '#1d4ed8',
+                color: msg.type === 'bot' ? '#0f172a' : '#ffffff',
+                border: msg.type === 'bot' ? '1px solid #e2e8f0' : 'none',
+                borderRadius: '16px',
+                borderTopLeftRadius: msg.type === 'bot' ? '4px' : '16px',
+                borderTopRightRadius: msg.type === 'bot' ? '16px' : '4px',
+                padding: '12px 16px',
+                boxShadow: msg.type === 'bot' ? '0 1px 4px rgba(0,0,0,0.04)' : '0 2px 8px rgba(29,78,216,0.2)',
+                flex: 1
+              }}>
+                {msg.type === 'bot' && (
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px', gap: '8px' }}>
+                    <span style={{ fontSize: '11px', fontWeight: 700, color: '#1d4ed8', letterSpacing: '0.02em' }}>
+                      MediKiosk Clinical AI
+                    </span>
+                    {msg.text !== 'Processing...' && msg.text !== 'Listening...' && (
+                      <button
+                        onClick={() => speakText(msg.text)}
+                        style={{
+                          background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: '12px',
+                          padding: '2px 8px', fontSize: '11px', fontWeight: 600, color: '#1d4ed8',
+                          cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '3px',
+                          transition: 'all 0.15s ease'
+                        }}
+                        title="Replay audio"
+                      >
+                        🔊 Listen
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {msg.text === 'Processing...' ? (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#64748b', fontSize: '13px', padding: '4px 0' }}>
+                    <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                      <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#1d4ed8', animation: 'typingDot 1.4s infinite 0s' }} />
+                      <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#1d4ed8', animation: 'typingDot 1.4s infinite 0.2s' }} />
+                      <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#1d4ed8', animation: 'typingDot 1.4s infinite 0.4s' }} />
+                    </div>
+                    <span>{t('processing')}</span>
+                  </div>
+                ) : (
+                  <div style={{ fontSize: '14.5px', lineHeight: 1.6, fontWeight: 500, whiteSpace: 'pre-wrap' }}>
+                    {msg.text}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+          <div ref={chatEndRef} />
         </div>
-      )}
+
+        {/* ── Quick Symptom Touch Cards (Initial Phase) ── */}
+        {conversationPhase === 'initial' && !isProcessing && (
+          <div style={{
+            padding: '12px 20px',
+            background: '#ffffff',
+            borderTop: '1px solid #e2e8f0'
+          }}>
+            <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--color-text-secondary)', textTransform: 'uppercase', letterSpacing: '0.04em', display: 'block', marginBottom: '8px' }}>
+              👆 {t('tap_symptom')}
+            </span>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
+              {quickSymptoms.map(s => (
+                <button
+                  key={s.value}
+                  onClick={() => handleQuickAnswer(s.value)}
+                  style={{
+                    background: '#ffffff',
+                    border: '1px solid #cbd5e1',
+                    borderRadius: '10px',
+                    padding: '8px 12px',
+                    cursor: 'pointer',
+                    textAlign: 'left',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    transition: 'all 0.15s ease',
+                    boxShadow: '0 1px 2px rgba(0,0,0,0.03)'
+                  }}
+                  onMouseEnter={e => {
+                    e.currentTarget.style.borderColor = '#1d4ed8';
+                    e.currentTarget.style.background = '#f0f7ff';
+                  }}
+                  onMouseLeave={e => {
+                    e.currentTarget.style.borderColor = '#cbd5e1';
+                    e.currentTarget.style.background = '#ffffff';
+                  }}
+                >
+                  <span style={{ fontSize: '1.25rem', flexShrink: 0 }}>{s.icon}</span>
+                  <div style={{ overflow: 'hidden' }}>
+                    <div style={{ fontSize: '12.5px', fontWeight: 700, color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {s.label}
+                    </div>
+                    <div style={{ fontSize: '10px', color: '#64748b' }}>
+                      {s.sub}
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ── Quick Yes / No / Not Sure (Follow-up Phase) ── */}
+        {conversationPhase === 'follow-up' && !isProcessing && (
+          <div style={{
+            padding: '10px 20px',
+            background: '#ffffff',
+            borderTop: '1px solid #e2e8f0'
+          }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
+              <button
+                onClick={() => handleQuickAnswer('Yes')}
+                style={{
+                  background: '#f0fdf4', color: '#166534', border: '1px solid #bbf7d0',
+                  borderRadius: '10px', padding: '10px 14px', fontSize: '14px', fontWeight: 700,
+                  cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                  transition: 'all 0.15s ease'
+                }}
+              >
+                <span>✓</span> {t('yes')}
+              </button>
+              <button
+                onClick={() => handleQuickAnswer('No')}
+                style={{
+                  background: '#fef2f2', color: '#991b1b', border: '1px solid #fecaca',
+                  borderRadius: '10px', padding: '10px 14px', fontSize: '14px', fontWeight: 700,
+                  cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                  transition: 'all 0.15s ease'
+                }}
+              >
+                <span>✕</span> {t('no')}
+              </button>
+              <button
+                onClick={() => handleQuickAnswer('Not sure')}
+                style={{
+                  background: '#f8fafc', color: '#334155', border: '1px solid #cbd5e1',
+                  borderRadius: '10px', padding: '10px 14px', fontSize: '14px', fontWeight: 600,
+                  cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                  transition: 'all 0.15s ease'
+                }}
+              >
+                <span>🤷</span> {t('not_sure')}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* ── Kiosk Voice & Text Console (Bottom Dock) ── */}
+        {conversationPhase !== 'complete' && (
+          <div style={{
+            padding: '14px 20px',
+            background: '#ffffff',
+            borderTop: '1px solid #e2e8f0',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '10px'
+          }}>
+            {/* Primary Voice Mic Action Bar */}
+            <button
+              onClick={handleMicClick}
+              disabled={isProcessing}
+              style={{
+                width: '100%',
+                minHeight: 50,
+                borderRadius: '10px',
+                background: isRecording
+                  ? '#b91c1c'
+                  : 'linear-gradient(135deg, #1d4ed8 0%, #2563eb 100%)',
+                color: '#ffffff',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '10px',
+                fontSize: '15px',
+                fontWeight: 700,
+                border: 'none',
+                cursor: isProcessing ? 'not-allowed' : 'pointer',
+                boxShadow: isRecording
+                  ? '0 4px 16px rgba(185,28,28,0.35)'
+                  : '0 2px 10px rgba(29,78,216,0.25)',
+                animation: isRecording ? 'pulse-ring 1.5s infinite' : 'none',
+                transition: 'all 0.15s ease'
+              }}
+            >
+              <span style={{ fontSize: '1.25rem' }}>{isRecording ? '⏹' : '🎙️'}</span>
+              <span>
+                {isRecording
+                  ? 'सुन रहे हैं... समाप्त करने के लिए टैप करें (Listening... Tap to finish)'
+                  : `बोलकर बताएं (Tap to Speak in ${languageLabel})`}
+              </span>
+              {isRecording && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '3px', marginLeft: '6px' }}>
+                  <span style={{ width: 3, background: '#fff', borderRadius: 2, animation: 'waveBar 0.8s infinite 0s' }} />
+                  <span style={{ width: 3, background: '#fff', borderRadius: 2, animation: 'waveBar 0.8s infinite 0.2s' }} />
+                  <span style={{ width: 3, background: '#fff', borderRadius: 2, animation: 'waveBar 0.8s infinite 0.4s' }} />
+                  <span style={{ width: 3, background: '#fff', borderRadius: 2, animation: 'waveBar 0.8s infinite 0.1s' }} />
+                </div>
+              )}
+            </button>
+
+            {/* Secondary Keyboard / Text Input Row */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <input
+                className="input"
+                placeholder={isRecording ? t('recording') : `${t('type_answer')} (Or type here...)`}
+                value={textInput}
+                onChange={e => setTextInput(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleTextSubmit()}
+                disabled={isProcessing || isRecording}
+                style={{
+                  flex: 1,
+                  minHeight: 44,
+                  padding: '8px 14px',
+                  fontSize: '14px',
+                  borderRadius: '8px',
+                  border: '1px solid #cbd5e1',
+                  background: '#f8fafc'
+                }}
+              />
+              <button
+                onClick={handleTextSubmit}
+                disabled={!textInput.trim() || isProcessing}
+                style={{
+                  minWidth: 44,
+                  minHeight: 44,
+                  borderRadius: '8px',
+                  background: (!textInput.trim() || isProcessing) ? '#e2e8f0' : '#1d4ed8',
+                  color: (!textInput.trim() || isProcessing) ? '#94a3b8' : '#ffffff',
+                  border: 'none',
+                  fontSize: '16px',
+                  fontWeight: 700,
+                  cursor: (!textInput.trim() || isProcessing) ? 'not-allowed' : 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  transition: 'all 0.15s ease'
+                }}
+                title="Send message"
+              >
+                ➤
+              </button>
+            </div>
+          </div>
+        )}
+
+      </div>
     </div>
   );
 }
