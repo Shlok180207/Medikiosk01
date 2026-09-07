@@ -2,6 +2,55 @@ import React, { useState, useEffect } from 'react';
 
 const API_BASE_URL = 'http://localhost:8000/api';
 
+/* ─── Helpers ────────────────────────────────────────────────────── */
+const isImageFile = (url) => {
+  if (!url) return false;
+  const l = url.toLowerCase();
+  return l.endsWith('.webp') || l.endsWith('.jpg') || l.endsWith('.jpeg') || l.endsWith('.png') || l.endsWith('.gif');
+};
+const isPdfFile = (url) => {
+  if (!url) return false;
+  return url.toLowerCase().includes('.pdf');
+};
+
+const getModalityMeta = (doc) => {
+  const mod = (doc.modality || '').toLowerCase();
+  const type = (doc.document_type || '').toLowerCase();
+  if (mod === 'radiology' || type.includes('x-ray') || type.includes('ct') || type.includes('mri') || type.includes('radiograph') || type.includes('ultrasound') || type.includes('scan')) {
+    return { title: 'Radiology', icon: '🩻', bg: '#f1f5f9', color: '#334155', border: '1px solid #cbd5e1' };
+  }
+  if (mod === 'ecg' || type.includes('ecg') || type.includes('ekg') || type.includes('rhythm') || type.includes('cardio')) {
+    return { title: 'ECG / Cardiology', icon: '📈', bg: '#fef2f2', color: '#991b1b', border: '1px solid #fecaca' };
+  }
+  if (mod === 'pathology' || type.includes('biopsy') || type.includes('patholog') || type.includes('histolog') || type.includes('cytology')) {
+    return { title: 'Pathology', icon: '🔬', bg: '#f5f3ff', color: '#5b21b6', border: '1px solid #ddd6fe' };
+  }
+  if (mod === 'endoscopy' || type.includes('endoscop') || type.includes('colonoscop') || type.includes('laparoscop') || type.includes('dermoscop') || type.includes('fundus')) {
+    return { title: 'Endoscopy', icon: '🩺', bg: '#fffbeb', color: '#92400e', border: '1px solid #fde68a' };
+  }
+  return { title: 'Lab / Rx', icon: '📄', bg: '#f8fafc', color: '#334155', border: '1px solid #cbd5e1' };
+};
+
+const getLikelihoodStyle = (likelihood) => {
+  const l = (likelihood || 'medium').toLowerCase();
+  if (l === 'high') {
+    return { label: 'HIGH', dot: '#b91c1c', badgeBg: '#fee2e2', badgeColor: '#991b1b', badgeBorder: '#fca5a5' };
+  }
+  if (l === 'medium' || l === 'moderate') {
+    return { label: 'MOD', dot: '#b45309', badgeBg: '#fef3c7', badgeColor: '#92400e', badgeBorder: '#fcd34d' };
+  }
+  return { label: 'LOW', dot: '#64748b', badgeBg: '#f1f5f9', badgeColor: '#475569', badgeBorder: '#e2e8f0' };
+};
+
+const oneLiner = (text) => {
+  if (!text || text === 'None reported' || text === 'Not recorded') return null;
+  const clean = text.replace(/\n+/g, ' ').trim();
+  return clean.length > 120 ? clean.slice(0, 117) + '…' : clean;
+};
+
+/* ═══════════════════════════════════════════════════════════════════
+   MAIN DASHBOARD COMPONENT
+   ═══════════════════════════════════════════════════════════════════ */
 export default function Dashboard() {
   const [queue, setQueue] = useState([]);
   const [selectedPatientId, setSelectedPatientId] = useState(null);
@@ -10,25 +59,19 @@ export default function Dashboard() {
   const [historyData, setHistoryData] = useState(null);
   const [showAllHistory, setShowAllHistory] = useState(false);
 
-  // Fetch queue
+  /* ─── Data Fetching (unchanged) ─────────────────────────────────── */
   const fetchQueue = async () => {
     try {
       const response = await fetch(`${API_BASE_URL}/patients`);
       const patients = await response.json();
       setQueue(patients);
-    } catch (error) {
-      console.error('Failed to fetch queue', error);
-    }
+    } catch (error) { console.error('Failed to fetch queue', error); }
   };
 
-  // Auto-select first patient only if none selected
   useEffect(() => {
-    if (queue.length > 0 && !selectedPatientId) {
-      setSelectedPatientId(queue[0].patient_id);
-    }
+    if (queue.length > 0 && !selectedPatientId) setSelectedPatientId(queue[0].patient_id);
   }, [queue, selectedPatientId]);
 
-  // Fetch patient data
   const fetchData = async () => {
     if (!selectedPatientId) return;
     try {
@@ -37,72 +80,65 @@ export default function Dashboard() {
       const data = await response.json();
       setPatientData(data);
       setStatus('Synchronized');
-    } catch (error) {
-      console.error('Failed to fetch data', error);
-      setStatus('Error connecting');
-    }
+    } catch (error) { console.error('Failed to fetch data', error); setStatus('Error connecting'); }
   };
 
-  // Delete patient
   const handleDelete = async (e, id) => {
     e.stopPropagation();
     if (!window.confirm(`Are you sure you want to delete patient ${id}?`)) return;
     try {
       await fetch(`${API_BASE_URL}/patients/${id}`, { method: 'DELETE' });
-      if (selectedPatientId === id) {
-        setSelectedPatientId(null);
-        setPatientData(null);
-      }
+      if (selectedPatientId === id) { setSelectedPatientId(null); setPatientData(null); }
       fetchQueue();
-    } catch (error) {
-      console.error('Failed to delete patient', error);
-    }
+    } catch (error) { console.error('Failed to delete patient', error); }
   };
 
   useEffect(() => {
-    const interval = setInterval(fetchQueue, 5000);
+    const interval = setInterval(fetchQueue, 10000);
     fetchQueue();
     return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
-    if (selectedPatientId) {
-      fetchData();
-      fetchHistory();
-      setShowAllHistory(false);
-    }
+    if (selectedPatientId) { fetchData(); fetchHistory(); setShowAllHistory(false); }
   }, [selectedPatientId]);
 
-  // Fetch ABHA-linked history
+  useEffect(() => {
+    if (!selectedPatientId) return;
+    if (patientData && !patientData.is_synthesized) {
+      const pollTimer = setInterval(() => { fetchData(); }, 3000);
+      return () => clearInterval(pollTimer);
+    }
+  }, [selectedPatientId, patientData?.is_synthesized]);
+
   const fetchHistory = async () => {
     if (!selectedPatientId) return;
     try {
       const response = await fetch(`${API_BASE_URL}/patient-history?patient_id=${selectedPatientId}`);
       const data = await response.json();
       setHistoryData(data);
-    } catch (error) {
-      console.error('Failed to fetch history', error);
-    }
+    } catch (error) { console.error('Failed to fetch history', error); }
   };
 
   const isEmergency = patientData?.is_emergency;
+  const ci = patientData?.clinical_impression;
 
   return (
     <div style={{ display: 'flex', height: '100vh', background: 'var(--color-bg)' }}>
 
-      {/* Sidebar — Patient Queue */}
+      {/* ═══ Sidebar — Patient Queue ═══ */}
       <aside style={{
-        width: 300, flexShrink: 0, background: 'var(--color-surface)',
+        width: 280, flexShrink: 0, background: 'var(--color-surface)',
         borderRight: '1px solid var(--color-border)', display: 'flex', flexDirection: 'column'
       }}>
-        <div style={{ padding: 'var(--space-5)', borderBottom: '1px solid var(--color-border)' }}>
-          <h3 style={{ fontSize: 'var(--font-size-lg)', fontWeight: 700 }}>🏥 Patient Queue</h3>
-          <p className="caption">{queue.length} patient(s)</p>
+        <div style={{ padding: '16px 18px', borderBottom: '1px solid var(--color-border)' }}>
+          <h3 style={{ fontSize: '1rem', fontWeight: 700, margin: 0 }}>🏥 Patient Queue</h3>
+          <p style={{ margin: '4px 0 0', fontSize: '12px', color: 'var(--color-text-muted)' }}>{queue.length} patient(s)</p>
         </div>
         <div style={{ flex: 1, overflowY: 'auto' }}>
           {queue.length === 0 ? (
-            <div style={{ padding: 'var(--space-6)', textAlign: 'center' }}>
-              <p className="caption">No patients in queue</p>
+            <div style={{ padding: '40px 20px', textAlign: 'center' }}>
+              <p style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>No patients in queue</p>
             </div>
           ) : (
             queue.map(p => (
@@ -110,284 +146,370 @@ export default function Dashboard() {
                 key={p.patient_id}
                 onClick={() => setSelectedPatientId(p.patient_id)}
                 style={{
-                  padding: 'var(--space-4) var(--space-5)',
+                  padding: '12px 18px',
                   borderBottom: '1px solid var(--color-border-light)',
                   cursor: 'pointer',
-                  background: selectedPatientId === p.patient_id ? 'var(--color-primary-50)' : 'transparent',
-                  borderLeft: selectedPatientId === p.patient_id ? '3px solid var(--color-primary)' : '3px solid transparent',
-                  transition: 'all var(--transition-fast)'
+                  background: selectedPatientId === p.patient_id ? '#f1f5f9' : 'transparent',
+                  borderLeft: selectedPatientId === p.patient_id ? '3px solid #1d4ed8' : '3px solid transparent',
+                  transition: 'all 0.15s ease'
                 }}
               >
-                <div className="flex items-start justify-between gap-2">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                   <div>
-                    <div className="flex items-center gap-1.5 mb-1 flex-wrap">
-                      {p.is_emergency && <span style={{ color: 'var(--color-danger)' }}>🚨</span>}
-                      <span style={{ fontWeight: 700, color: 'var(--color-text)', fontSize: '0.95rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                      {p.is_emergency && <span style={{ color: 'var(--color-danger)', fontSize: '12px' }}>🚨</span>}
+                      <span style={{ fontWeight: 600, color: 'var(--color-text)', fontSize: '0.9rem' }}>
                         {p.patient_name || p.patient_id}
                       </span>
                       {p.is_ayush && (
-                        <span style={{ 
-                          background: 'rgba(16, 185, 129, 0.15)', 
-                          color: '#059669', 
-                          padding: '1px 6px', 
-                          borderRadius: '8px', 
-                          fontSize: '10px', 
-                          fontWeight: 700,
-                          border: '1px solid rgba(16, 185, 129, 0.3)'
-                        }}>
-                          🌿 AYUSH
+                        <span style={{ background: '#f0fdf4', color: '#166534', padding: '1px 6px', borderRadius: '4px', fontSize: '10px', fontWeight: 600, border: '1px solid #bbf7d0' }}>
+                          AYUSH
                         </span>
                       )}
                     </div>
-                    <div className="caption" style={{ color: 'var(--color-primary)', fontWeight: 600, fontSize: '11px' }}>
+                    <div style={{ fontSize: '11px', color: 'var(--color-text-muted)', fontWeight: 500, marginTop: '2px' }}>
                       {p.abha_id ? `ABHA: ${p.abha_id}` : p.patient_id}
                     </div>
                     {(p.age || p.gender) && (
-                      <div className="caption" style={{ fontSize: '11px', color: 'var(--color-text-secondary)' }}>
+                      <div style={{ fontSize: '11px', color: 'var(--color-text-secondary)', marginTop: '1px' }}>
                         {p.age ? `${p.age} yrs` : ''} {p.gender ? `• ${p.gender}` : ''}
                       </div>
                     )}
                   </div>
-                  <button 
-                    onClick={(e) => handleDelete(e, p.patient_id)} 
-                    style={{ background: 'none', border: 'none', cursor: 'pointer', opacity: 0.6 }}
+                  <button
+                    onClick={(e) => handleDelete(e, p.patient_id)}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', opacity: 0.5, fontSize: '14px' }}
                     title="Delete patient"
-                  >
-                    🗑️
-                  </button>
+                  >🗑️</button>
                 </div>
-                <span className="caption" style={{ fontSize: '10px', marginTop: '4px', display: 'block' }}>Arrived: {p.created_at}</span>
+                <span style={{ fontSize: '10px', color: 'var(--color-text-muted)', marginTop: '3px', display: 'block' }}>Arrived: {p.created_at}</span>
               </div>
             ))
           )}
         </div>
       </aside>
 
-      {/* Main Content */}
-      <main style={{ flex: 1, overflowY: 'auto', padding: 'var(--space-6)' }}>
+      {/* ═══ Main Content ═══ */}
+      <main style={{ flex: 1, overflowY: 'auto', padding: '20px 28px' }}>
 
         {!patientData ? (
-          <div className="page-container" style={{ minHeight: 'auto' }}>
-            <div className="text-center">
-              <div style={{ fontSize: '3rem', marginBottom: 'var(--space-4)' }}>👨‍⚕️</div>
-              <h2 className="heading-2 mb-2">MediKiosk Clinical Dashboard</h2>
-              <p className="subtitle">Select a patient from the queue to view their clinical summary</p>
-            </div>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '60vh' }}>
+            <div style={{ fontSize: '3rem', marginBottom: '12px' }}>👨‍⚕️</div>
+            <h2 style={{ fontSize: '1.4rem', fontWeight: 700, marginBottom: '6px' }}>MediKiosk Clinical Dashboard</h2>
+            <p style={{ color: 'var(--color-text-muted)', fontSize: '14px' }}>Select a patient from the queue to view their clinical summary</p>
           </div>
         ) : (
           <div className="animate-fade-in">
-            {/* Header */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-6)', flexWrap: 'wrap', gap: 'var(--space-4)' }}>
-              <div>
-                <div className="flex items-center gap-3 mb-1 flex-wrap">
-                  <h2 className="heading-2">{patientData.patient_name || 'Clinical Summary'}</h2>
-                  {patientData.is_ayush && (
-                    <span className="badge" style={{ background: '#ecfdf5', color: '#047857', border: '1px solid #a7f3d0', fontSize: '0.85rem', padding: '4px 12px', fontWeight: 700 }}>
-                      🌿 AYUSH OPD (Ayurvedic & Holistic Consultation)
+
+            {/* ═══════════════════════════════════════════════════════
+                 HERO STRIP — The 5-Second Briefing
+                ═══════════════════════════════════════════════════════ */}
+            <div style={{
+              background: '#ffffff',
+              border: '1px solid var(--color-border)',
+              borderLeft: isEmergency ? '4px solid var(--color-danger)' : '1px solid var(--color-border)',
+              borderRadius: '10px',
+              padding: '0',
+              marginBottom: '16px',
+              overflow: 'hidden',
+              boxShadow: '0 1px 3px rgba(0,0,0,0.05)'
+            }}>
+
+              {/* Row 1: Patient Identity + Vitals Strip */}
+              <div style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                padding: '12px 18px', flexWrap: 'wrap', gap: '10px',
+                borderBottom: '1px solid var(--color-border-light)',
+                background: isEmergency ? 'rgba(185,28,28,0.02)' : '#ffffff'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                  {/* Name */}
+                  <h2 style={{ fontSize: '1.25rem', fontWeight: 700, margin: 0, color: 'var(--color-text)', letterSpacing: '-0.01em' }}>
+                    {patientData.patient_name || 'Patient'}
+                  </h2>
+                  {/* Age/Gender pill */}
+                  <span style={{
+                    background: '#f8fafc', border: '1px solid #e2e8f0',
+                    borderRadius: '4px', padding: '2px 8px', fontSize: '11px', fontWeight: 600, color: 'var(--color-text-secondary)'
+                  }}>
+                    {patientData.age ? `${patientData.age}` : '?'}
+                    {patientData.gender ? ` ${patientData.gender.charAt(0).toUpperCase()}` : ''}
+                  </span>
+                  {/* Severity Badge */}
+                  <span style={{
+                    background: patientData.severity === 'High' ? '#fef2f2' : patientData.severity === 'Medium' ? '#fffbeb' : '#f0fdf4',
+                    color: patientData.severity === 'High' ? '#991b1b' : patientData.severity === 'Medium' ? '#92400e' : '#166534',
+                    border: `1px solid ${patientData.severity === 'High' ? '#fecaca' : patientData.severity === 'Medium' ? '#fde68a' : '#bbf7d0'}`,
+                    borderRadius: '4px', padding: '2px 8px', fontSize: '11px', fontWeight: 700, letterSpacing: '0.02em',
+                    display: 'inline-flex', alignItems: 'center', gap: '5px'
+                  }}>
+                    <span style={{
+                      width: 6, height: 6, borderRadius: '50%',
+                      background: patientData.severity === 'High' ? '#b91c1c' : patientData.severity === 'Medium' ? '#b45309' : '#15803d'
+                    }}></span>
+                    {patientData.severity ? `${patientData.severity.toUpperCase()} PRIORITY` : 'NORMAL'}
+                  </span>
+                  {/* Emergency flag */}
+                  {isEmergency && (
+                    <span style={{
+                      background: '#991b1b', color: '#fff', padding: '2px 8px', borderRadius: '4px',
+                      fontSize: '11px', fontWeight: 700, letterSpacing: '0.04em'
+                    }}>
+                      EMERGENCY
                     </span>
                   )}
+                  {/* AYUSH badge */}
+                  {patientData.is_ayush && (
+                    <span style={{ background: '#f0fdf4', color: '#166534', border: '1px solid #bbf7d0', padding: '2px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 600 }}>
+                      AYUSH
+                    </span>
+                  )}
+                  {/* ABHA */}
                   {patientData.abha_id && (
-                    <span className="badge badge-info" style={{ fontSize: '0.8rem', padding: '4px 10px' }}>
+                    <span style={{ background: '#f1f5f9', color: '#475569', border: '1px solid #e2e8f0', padding: '2px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 600 }}>
                       ABHA: {patientData.abha_id}
                     </span>
                   )}
                 </div>
-                <p className="caption">
-                  {patientData.age ? `Age ${patientData.age}` : ''} {patientData.gender ? `• ${patientData.gender}` : ''} {patientData.phone ? `• Ph: ${patientData.phone}` : ''} • ID: {patientData.patient_id} • {status}
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <span style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>
+                    {patientData.phone ? `Tel: ${patientData.phone}` : ''} {patientData.duration ? `• Duration: ${patientData.duration}` : ''}
+                  </span>
+                  <button
+                    onClick={() => { fetchData(); fetchHistory(); }}
+                    style={{
+                      background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '6px',
+                      padding: '4px 10px', fontSize: '11px', fontWeight: 600, cursor: 'pointer', color: '#334155',
+                      display: 'flex', alignItems: 'center', gap: '4px'
+                    }}
+                  >🔄 Refresh</button>
+                </div>
+              </div>
+
+              {/* Row 2: Chief Complaint */}
+              <div style={{ padding: '12px 18px', borderBottom: '1px solid var(--color-border-light)' }}>
+                <span style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', color: 'var(--color-text-muted)', letterSpacing: '0.06em', display: 'block', marginBottom: '2px' }}>
+                  Chief Complaint
+                </span>
+                <p style={{ margin: 0, fontSize: '1.05rem', fontWeight: 700, color: 'var(--color-text)', lineHeight: 1.35 }}>
+                  {patientData.chief_complaint || 'Not recorded'}
                 </p>
               </div>
-              <div className="flex gap-3">
-                <button className="btn btn-secondary btn-sm" onClick={() => { fetchData(); fetchHistory(); }}>🔄 Refresh</button>
-                <button className="btn btn-primary btn-sm">✓ Start Consultation</button>
-              </div>
-            </div>
 
-            {/* Emergency Banner */}
-            {isEmergency && (
-              <div className="alert alert-danger mb-6" style={{ fontSize: 'var(--font-size-lg)', fontWeight: 700 }}>
-                🚨 URGENT MEDICAL ALERT — High Severity Symptoms Detected!
-              </div>
-            )}
-
-            {/* Draft Banner */}
-            <div className="alert alert-warning mb-6">
-              ⚠️ AI-GENERATED DRAFT — VERIFY BEFORE CLINICAL USE
-            </div>
-
-            {/* AI Clinical Decision Support & Differential Diagnoses */}
-            {patientData.clinical_impression && (
-              <ClinicalImpressionCard impression={patientData.clinical_impression} patientData={patientData} />
-            )}
-
-            {/* AYUSH Card (Prominent when is_ayush is true) */}
-            {(patientData.is_ayush || (patientData.prakriti && patientData.prakriti !== 'Not assessed')) && (
-              <div 
-                className="card mb-6" 
-                style={{ 
-                  padding: 'var(--space-5)', 
-                  border: '1px solid rgba(16, 185, 129, 0.35)', 
-                  borderLeft: '5px solid #059669',
-                  background: 'linear-gradient(180deg, rgba(236, 253, 245, 0.8) 0%, var(--color-surface) 100%)',
-                  borderRadius: 'var(--radius-lg, 12px)',
-                  boxShadow: '0 4px 12px rgba(16, 185, 129, 0.08)'
-                }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-4)', borderBottom: '1px solid rgba(16, 185, 129, 0.2)', paddingBottom: 'var(--space-3)' }}>
-                  <div className="flex items-center gap-2">
-                    <span style={{ fontSize: '1.4rem' }}>🌿</span>
-                    <h3 style={{ fontSize: 'var(--font-size-lg)', fontWeight: 800, color: '#065f46' }}>
-                      AYUSH & Holistic Clinical Assessment
-                    </h3>
-                    <span className="badge" style={{ background: '#d1fae5', color: '#065f46', fontSize: '11px', fontWeight: 700, padding: '2px 8px' }}>
-                      Ayurvedic OPD
+              {/* Row 3: Decision Support Strip */}
+              {ci && (ci.clinical_synthesis || (ci.probable_diagnoses && ci.probable_diagnoses.length > 0)) && (
+                <div style={{ padding: '12px 18px', background: '#f8fafc', borderTop: '1px solid var(--color-border-light)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+                    <span style={{ fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', color: 'var(--color-text-secondary)', letterSpacing: '0.06em' }}>
+                      Clinical Decision Support
                     </span>
+                    <span style={{
+                      background: '#e2e8f0', color: '#475569', borderRadius: '4px',
+                      padding: '1px 6px', fontSize: '9px', fontWeight: 600
+                    }}>DRAFT</span>
                   </div>
-                  <span className="caption" style={{ color: '#047857', fontWeight: 600 }}>Doshic & Srotas Evaluation</span>
-                </div>
 
-                {/* 3 Core Pillars */}
-                <div className="grid-3 mb-4" style={{ gap: 'var(--space-4)' }}>
-                  <div style={{ background: 'rgba(255, 255, 255, 0.9)', padding: 'var(--space-3) var(--space-4)', borderRadius: '8px', border: '1px solid rgba(16, 185, 129, 0.2)' }}>
-                    <span className="caption" style={{ color: '#047857', fontWeight: 700, textTransform: 'uppercase', fontSize: '10px' }}>🧬 Prakriti (Constitutional Archetype)</span>
-                    <p className="body-text" style={{ fontWeight: 700, color: 'var(--color-text)', marginTop: '4px' }}>
-                      {patientData.prakriti && patientData.prakriti !== 'Not assessed' ? patientData.prakriti : 'Vata-Pitta dominant'}
-                    </p>
-                  </div>
-                  <div style={{ background: 'rgba(255, 255, 255, 0.9)', padding: 'var(--space-3) var(--space-4)', borderRadius: '8px', border: '1px solid rgba(16, 185, 129, 0.2)' }}>
-                    <span className="caption" style={{ color: '#047857', fontWeight: 700, textTransform: 'uppercase', fontSize: '10px' }}>⚖️ Vikriti (Doshic Imbalance / Srotas)</span>
-                    <p className="body-text" style={{ fontWeight: 700, color: 'var(--color-text)', marginTop: '4px' }}>
-                      {patientData.vikriti && patientData.vikriti !== 'Not assessed' ? patientData.vikriti : 'Pranavaha Srotas Dushti (Vata-Kaphaja)'}
-                    </p>
-                  </div>
-                  <div style={{ background: 'rgba(255, 255, 255, 0.9)', padding: 'var(--space-3) var(--space-4)', borderRadius: '8px', border: '1px solid rgba(16, 185, 129, 0.2)' }}>
-                    <span className="caption" style={{ color: '#047857', fontWeight: 700, textTransform: 'uppercase', fontSize: '10px' }}>🔥 Agni (Metabolic & Digestive Fire)</span>
-                    <p className="body-text" style={{ fontWeight: 700, color: 'var(--color-text)', marginTop: '4px' }}>
-                      {patientData.agni && patientData.agni !== 'Not assessed' ? patientData.agni : 'Vishamagni (Irregular digestive fire)'}
-                    </p>
-                  </div>
-                </div>
-
-                {/* Doshic Indicators & Treatment Guidelines */}
-                <div style={{ background: 'rgba(255, 255, 255, 0.85)', padding: 'var(--space-4)', borderRadius: '8px', border: '1px solid rgba(16, 185, 129, 0.15)' }}>
-                  <div className="grid-2" style={{ gap: 'var(--space-4)' }}>
-                    <div>
-                      <h5 style={{ fontSize: '12px', fontWeight: 700, color: '#065f46', marginBottom: '6px', textTransform: 'uppercase' }}>💨 Doshic State Analysis</h5>
-                      <div className="flex gap-2 flex-wrap">
-                        <span style={{ background: 'rgba(59, 130, 246, 0.1)', color: '#2563eb', padding: '3px 8px', borderRadius: '6px', fontSize: '11px', fontWeight: 600 }}>💨 Vata: Prakopa / Elevated</span>
-                        <span style={{ background: 'rgba(239, 68, 68, 0.1)', color: '#dc2626', padding: '3px 8px', borderRadius: '6px', fontSize: '11px', fontWeight: 600 }}>🔥 Pitta: Samana / Moderate</span>
-                        <span style={{ background: 'rgba(16, 185, 129, 0.1)', color: '#059669', padding: '3px 8px', borderRadius: '6px', fontSize: '11px', fontWeight: 600 }}>💧 Kapha: Avarana Tendency</span>
-                      </div>
+                  {/* Top diagnoses as clean white cards with subtle acuity badge */}
+                  {ci.probable_diagnoses && ci.probable_diagnoses.length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '8px' }}>
+                      {ci.probable_diagnoses.map((diag, idx) => {
+                        const s = getLikelihoodStyle(diag.likelihood);
+                        return (
+                          <div key={idx} style={{
+                            background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '6px', padding: '5px 12px',
+                            display: 'flex', alignItems: 'center', gap: '8px', boxShadow: '0 1px 2px rgba(0,0,0,0.03)'
+                          }}>
+                            <span style={{ width: 7, height: 7, borderRadius: '50%', background: s.dot, flexShrink: 0 }}></span>
+                            <span style={{ fontWeight: 600, fontSize: '13px', color: 'var(--color-text)' }}>{diag.condition}</span>
+                            <span style={{
+                              fontSize: '10px', fontWeight: 700, background: s.badgeBg, color: s.badgeColor,
+                              border: `1px solid ${s.badgeBorder}`, padding: '1px 6px', borderRadius: '3px', letterSpacing: '0.02em'
+                            }}>{s.label}</span>
+                          </div>
+                        );
+                      })}
                     </div>
-                    <div>
-                      <h5 style={{ fontSize: '12px', fontWeight: 700, color: '#065f46', marginBottom: '6px', textTransform: 'uppercase' }}>🍵 Chikitsa Sutra & Pathya/Apathya</h5>
-                      <p className="caption" style={{ margin: 0, color: 'var(--color-text)' }}>
-                        Light warm diet (Laghu Ushna Ahara). Snehana & Vata-Shamana therapy. Avoid cold/dry food and excessive exertion.
-                      </p>
+                  )}
+
+                  {/* Critical Rule-Outs — subtle clinical alert tags */}
+                  {ci.critical_rule_outs && ci.critical_rule_outs.length > 0 && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginBottom: '8px' }}>
+                      <span style={{ fontSize: '10px', fontWeight: 700, color: 'var(--color-danger)', letterSpacing: '0.04em' }}>RULE OUT:</span>
+                      {ci.critical_rule_outs.map((r, idx) => (
+                        <span key={idx} style={{
+                          background: '#fef2f2', color: '#991b1b', border: '1px solid #fecaca',
+                          borderRadius: '4px', padding: '2px 8px', fontSize: '11px', fontWeight: 600
+                        }}>{r}</span>
+                      ))}
                     </div>
-                  </div>
-                </div>
-              </div>
-            )}
+                  )}
 
-            {/* Cards Grid */}
-            <div className="grid-2" style={{ gap: 'var(--space-4)', alignItems: 'start' }}>
-
-              {/* Left */}
-              <div className="flex flex-col gap-4">
-                <DashCard title="🎯 Chief Complaint" content={patientData.chief_complaint}
-                  highlight severity={patientData.severity} />
-                <DashCard title="📋 History of Present Illness" content={patientData.hpi} />
-                <DashCard title="📂 Past Medical History" content={patientData.past_medical_history} />
-                <DashCard title="👨‍👩‍👧‍👦 Family History" content={patientData.family_history} />
-              </div>
-
-              {/* Right */}
-              <div className="flex flex-col gap-4">
-                <DashCard title="🏃 Personal / Lifestyle" content={patientData.personal_history} />
-                <DashCard title="⚠️ Allergies" content={patientData.allergies} />
-                <DashCard title="🔍 Review of Systems" content={patientData.review_of_systems} />
-
-                {/* Quick Stats */}
-                <div className="card" style={{ padding: 'var(--space-5)' }}>
-                  <h4 style={{ fontWeight: 600, marginBottom: 'var(--space-3)' }}>📊 Assessment</h4>
-                  <div className="flex flex-col gap-2">
-                    <StatRow label="Severity" value={patientData.severity}
-                      badge={patientData.severity === 'High' ? 'badge-danger' : patientData.severity === 'Medium' ? 'badge-warning' : 'badge-success'} />
-                    <StatRow label="Duration" value={patientData.duration} />
-                    <StatRow label="Emergency"
-                      value={patientData.is_emergency ? 'Yes' : 'No'}
-                      badge={patientData.is_emergency ? 'badge-danger' : 'badge-success'} />
-                  </div>
-                </div>
-
-                {/* Documents */}
-                {patientData.flagged_lab_values && patientData.flagged_lab_values !== '[]' && (
-                  <div className="card" style={{ padding: 'var(--space-5)' }}>
-                    <h4 style={{ fontWeight: 600, marginBottom: 'var(--space-3)' }}>📄 Processed Documents</h4>
-                    <DocumentsView data={patientData.flagged_lab_values} patientId={patientData.patient_id} />
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* ABHA Past Visit History */}
-            {historyData && (historyData.relevant_history?.length > 0 || historyData.other_history?.length > 0) && (
-              <div className="mt-4">
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-4)' }}>
-                  <h3 style={{ fontSize: 'var(--font-size-lg)', fontWeight: 700 }}>📜 Past Visit History (ABHA)</h3>
-                  {historyData.abha_id && (
-                    <span style={{ background: 'var(--color-primary-50)', color: 'var(--color-primary)', padding: '4px 12px', borderRadius: '20px', fontSize: 'var(--font-size-sm)', fontWeight: 600 }}>
-                      ABHA: {historyData.abha_id}
-                    </span>
+                  {/* Suggested Tests */}
+                  {ci.suggested_investigations && ci.suggested_investigations.length > 0 && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: '10px', fontWeight: 700, color: 'var(--color-text-secondary)', letterSpacing: '0.04em' }}>SUGGESTED ORDERS:</span>
+                      {ci.suggested_investigations.map((test, idx) => (
+                        <CopyableChip key={idx} text={test} />
+                      ))}
+                    </div>
                   )}
                 </div>
+              )}
+            </div>
 
+            {/* ═══════════════════════════════════════════════════════
+                 AI SYNTHESIS — Collapsible Detail
+                ═══════════════════════════════════════════════════════ */}
+            {ci && ci.clinical_synthesis && (
+              <CollapsibleSection
+                icon="📝"
+                title="Clinical Synthesis"
+                defaultOpen={false}
+              >
+                <SynthesisBullets synthesis={ci.clinical_synthesis} />
+                {ci.probable_diagnoses && ci.probable_diagnoses.length > 0 && (
+                  <div style={{ marginTop: '12px' }}>
+                    <span style={{ fontSize: '10px', fontWeight: 700, color: 'var(--color-text-muted)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Supporting Evidence</span>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '6px' }}>
+                      {ci.probable_diagnoses.map((diag, idx) => (
+                        diag.supporting_evidence && (
+                          <div key={idx} style={{ fontSize: '12px', color: 'var(--color-text-secondary)', paddingLeft: '10px', borderLeft: '2px solid var(--color-border)' }}>
+                            <strong style={{ color: 'var(--color-text)' }}>{diag.condition}:</strong> {diag.supporting_evidence}
+                          </div>
+                        )
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </CollapsibleSection>
+            )}
+
+            {/* ═══════════════════════════════════════════════════════
+                 CLINICAL DETAILS — Collapsible Sections
+                ═══════════════════════════════════════════════════════ */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', marginBottom: '8px' }}>
+              <CollapsibleSection icon="📋" title="History of Present Illness" preview={oneLiner(patientData.hpi)}>
+                <p style={{ whiteSpace: 'pre-wrap', margin: 0, fontSize: '13px', lineHeight: 1.5, color: 'var(--color-text)' }}>{patientData.hpi || 'Not reported'}</p>
+              </CollapsibleSection>
+              <CollapsibleSection icon="📂" title="Past Medical History" preview={oneLiner(patientData.past_medical_history)}>
+                <p style={{ whiteSpace: 'pre-wrap', margin: 0, fontSize: '13px', lineHeight: 1.5, color: 'var(--color-text)' }}>{patientData.past_medical_history || 'Not reported'}</p>
+              </CollapsibleSection>
+              <CollapsibleSection icon="⚠️" title="Allergies" preview={oneLiner(patientData.allergies)}
+                alertBorder={Boolean(patientData.allergies && patientData.allergies !== 'None reported' && patientData.allergies !== 'Not recorded')}>
+                <p style={{ whiteSpace: 'pre-wrap', margin: 0, fontSize: '13px', lineHeight: 1.5, color: 'var(--color-text)' }}>{patientData.allergies || 'Not reported'}</p>
+              </CollapsibleSection>
+              <CollapsibleSection icon="👨‍👩‍👧‍👦" title="Family History" preview={oneLiner(patientData.family_history)}>
+                <p style={{ whiteSpace: 'pre-wrap', margin: 0, fontSize: '13px', lineHeight: 1.5, color: 'var(--color-text)' }}>{patientData.family_history || 'Not reported'}</p>
+              </CollapsibleSection>
+              <CollapsibleSection icon="🏃" title="Lifestyle / Personal" preview={oneLiner(patientData.personal_history)}>
+                <p style={{ whiteSpace: 'pre-wrap', margin: 0, fontSize: '13px', lineHeight: 1.5, color: 'var(--color-text)' }}>{patientData.personal_history || 'Not reported'}</p>
+              </CollapsibleSection>
+              <CollapsibleSection icon="🔍" title="Review of Systems" preview={oneLiner(patientData.review_of_systems)}>
+                <p style={{ whiteSpace: 'pre-wrap', margin: 0, fontSize: '13px', lineHeight: 1.5, color: 'var(--color-text)' }}>{patientData.review_of_systems || 'Not reported'}</p>
+              </CollapsibleSection>
+            </div>
+
+            {/* ═══════════════════════════════════════════════════════
+                 AYUSH — Compact accordion (only when relevant)
+                ═══════════════════════════════════════════════════════ */}
+            {(patientData.is_ayush || (patientData.prakriti && patientData.prakriti !== 'Not assessed')) && (
+              <CollapsibleSection
+                icon="🌿"
+                title="AYUSH / Ayurvedic Assessment"
+                preview={`Prakriti: ${patientData.prakriti || '—'} • Vikriti: ${patientData.vikriti || '—'}`}
+              >
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px', marginBottom: '10px' }}>
+                  <AyushPill label="Prakriti" value={patientData.prakriti} />
+                  <AyushPill label="Vikriti" value={patientData.vikriti} />
+                  <AyushPill label="Agni" value={patientData.agni} />
+                </div>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '8px' }}>
+                  <span style={{ background: '#f1f5f9', color: '#334155', border: '1px solid #cbd5e1', padding: '2px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 600 }}>💨 Vata: Prakopa / Elevated</span>
+                  <span style={{ background: '#fffbeb', color: '#92400e', border: '1px solid #fde68a', padding: '2px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 600 }}>🔥 Pitta: Samana / Moderate</span>
+                  <span style={{ background: '#f0fdf4', color: '#166534', border: '1px solid #bbf7d0', padding: '2px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: 600 }}>💧 Kapha: Avarana Tendency</span>
+                </div>
+                <div style={{ fontSize: '12px', color: 'var(--color-text-secondary)', borderTop: '1px solid var(--color-border-light)', paddingTop: '8px' }}>
+                  <strong style={{ color: 'var(--color-text)' }}>Chikitsa:</strong> Light warm diet (Laghu Ushna Ahara). Snehana & Vata-Shamana therapy. Avoid cold/dry food and excessive exertion.
+                </div>
+              </CollapsibleSection>
+            )}
+
+            {/* ═══════════════════════════════════════════════════════
+                 DOCUMENTS & LABS — Compact view
+                ═══════════════════════════════════════════════════════ */}
+            {patientData.flagged_lab_values && patientData.flagged_lab_values !== '[]' && (
+              <CollapsibleSection icon="📄" title="Processed Documents & Labs" defaultOpen={true}>
+                <DocumentsView data={patientData.flagged_lab_values} patientId={patientData.patient_id} />
+              </CollapsibleSection>
+            )}
+
+            {/* ═══════════════════════════════════════════════════════
+                 ABHA PAST HISTORY — Compact Timeline
+                ═══════════════════════════════════════════════════════ */}
+            {historyData && (historyData.relevant_history?.length > 0 || historyData.other_history?.length > 0) && (
+              <CollapsibleSection
+                icon="📜"
+                title={`Past Visit History (ABHA${historyData.abha_id ? `: ${historyData.abha_id}` : ''})`}
+                defaultOpen={true}
+              >
                 {historyData.filter_status === 'processing' && !patientData?.is_synthesized && (
-                  <div className="alert alert-warning mb-4" style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
-                    <div className="spinner" style={{ width: 18, height: 18 }} />
-                    🔄 AI is analyzing past medical history for relevance to today's complaint...
+                  <div style={{
+                    display: 'flex', alignItems: 'center', gap: '8px',
+                    background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: '6px',
+                    padding: '8px 12px', marginBottom: '10px', fontSize: '12px', color: '#92400e'
+                  }}>
+                    <div className="spinner" style={{ width: 14, height: 14 }} />
+                    AI is analyzing past history for relevance...
                   </div>
                 )}
 
-                {/* Relevant History */}
+                {/* Relevant visits — compact timeline */}
                 {historyData.relevant_history?.length > 0 && (
-                  <div style={{ marginBottom: 'var(--space-4)' }}>
-                    <h4 style={{ fontWeight: 600, marginBottom: 'var(--space-3)', color: 'var(--color-success)', fontSize: 'var(--font-size-base)' }}>
-                      ⚡ Relevant to Today's Visit ({historyData.relevant_history.length})
-                    </h4>
-                    <div className="flex flex-col gap-3">
+                  <div style={{ marginBottom: '10px' }}>
+                    <span style={{ fontSize: '10px', fontWeight: 700, color: 'var(--color-success)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                      RELEVANT TO TODAY ({historyData.relevant_history.length})
+                    </span>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '6px' }}>
                       {historyData.relevant_history.map(visit => (
-                        <VisitCard key={visit.id} visit={visit} isRelevant={true} />
+                        <CompactVisitRow key={visit.id} visit={visit} isRelevant />
                       ))}
                     </div>
                   </div>
                 )}
 
-                {/* Other History (collapsible) */}
+                {/* Other visits — hidden by default */}
                 {historyData.other_history?.length > 0 && (
                   <div>
                     <button
                       onClick={() => setShowAllHistory(!showAllHistory)}
                       style={{
-                        background: 'none', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)',
-                        padding: 'var(--space-2) var(--space-4)', cursor: 'pointer', color: 'var(--color-text-muted)',
-                        fontSize: 'var(--font-size-sm)', width: '100%', marginBottom: 'var(--space-3)',
-                        transition: 'all var(--transition-fast)'
+                        background: 'none', border: '1px solid var(--color-border)', borderRadius: '6px',
+                        padding: '4px 14px', cursor: 'pointer', color: 'var(--color-text-muted)',
+                        fontSize: '11px', width: '100%', marginBottom: '6px',
+                        transition: 'all 0.15s ease'
                       }}
                     >
-                      {showAllHistory ? '▼ Hide' : '▶ View All'} Other History ({historyData.other_history.length} visits)
+                      {showAllHistory ? '▼ Hide' : '▶ View'} Other History ({historyData.other_history.length} visits)
                     </button>
                     {showAllHistory && (
-                      <div className="flex flex-col gap-3 animate-fade-in">
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }} className="animate-fade-in">
                         {historyData.other_history.map(visit => (
-                          <VisitCard key={visit.id} visit={visit} isRelevant={false} />
+                          <CompactVisitRow key={visit.id} visit={visit} />
                         ))}
                       </div>
                     )}
                   </div>
                 )}
-              </div>
+              </CollapsibleSection>
             )}
+
+            {/* Draft disclaimer footer */}
+            <div style={{
+              textAlign: 'center', padding: '12px', marginTop: '8px',
+              fontSize: '11px', color: 'var(--color-text-muted)', fontWeight: 600, letterSpacing: '0.02em'
+            }}>
+              ⚠️ AI-GENERATED DRAFT — VERIFY BEFORE CLINICAL USE • {status}
+            </div>
 
           </div>
         )}
@@ -396,437 +518,453 @@ export default function Dashboard() {
   );
 }
 
-function DashCard({ title, content, highlight, severity }) {
-  const isEmpty = !content || content === 'None reported' || content === 'Not recorded';
-  return (
-    <div className="card" style={{
-      padding: 'var(--space-5)',
-      borderLeft: highlight ? `4px solid ${severity === 'High' ? 'var(--color-danger)' : 'var(--color-primary)'}` : undefined,
-      opacity: isEmpty ? 0.5 : 1
-    }}>
-      <h4 style={{ fontWeight: 600, marginBottom: 'var(--space-2)', fontSize: 'var(--font-size-base)' }}>{title}</h4>
-      <p className="body-text" style={{ whiteSpace: 'pre-wrap' }}>
-        {isEmpty ? 'Not reported' : content}
-      </p>
-    </div>
-  );
-}
 
-function StatRow({ label, value, badge }) {
+/* ═══════════════════════════════════════════════════════════════════
+   COLLAPSIBLE SECTION — Core building block
+   ═══════════════════════════════════════════════════════════════════ */
+function CollapsibleSection({ icon, title, preview, children, defaultOpen = false, alertBorder = false }) {
+  const [open, setOpen] = useState(defaultOpen);
+
   return (
-    <div className="flex items-center gap-2">
-      <span className="caption" style={{ width: 90 }}>{label}:</span>
-      {badge ? (
-        <span className={`badge ${badge}`}>{value || 'Unknown'}</span>
-      ) : (
-        <span className="body-text">{value || 'Unknown'}</span>
+    <div style={{
+      background: 'var(--color-surface)',
+      border: '1px solid var(--color-border)',
+      borderLeft: alertBorder ? '3px solid var(--color-danger)' : '1px solid var(--color-border)',
+      borderRadius: '8px',
+      marginBottom: '8px',
+      overflow: 'hidden',
+      transition: 'box-shadow 0.15s ease',
+      boxShadow: open ? '0 1px 4px rgba(0,0,0,0.03)' : 'none'
+    }}>
+      <button
+        onClick={() => setOpen(!open)}
+        style={{
+          width: '100%', background: 'none', border: 'none', cursor: 'pointer',
+          padding: '10px 14px', display: 'flex', alignItems: 'center', gap: '8px',
+          textAlign: 'left'
+        }}
+      >
+        <span style={{ fontSize: '13px', flexShrink: 0 }}>{icon}</span>
+        <span style={{ fontWeight: 600, fontSize: '13px', color: 'var(--color-text)', flexShrink: 0 }}>{title}</span>
+        {!open && preview && (
+          <span style={{
+            flex: 1, fontSize: '12px', color: 'var(--color-text-muted)',
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginLeft: '4px'
+          }}>
+            — {preview}
+          </span>
+        )}
+        <span style={{ marginLeft: 'auto', fontSize: '10px', color: 'var(--color-text-muted)', flexShrink: 0, paddingLeft: '8px' }}>
+          {open ? '▼' : '▶'}
+        </span>
+      </button>
+      {open && (
+        <div style={{ padding: '0 14px 12px 34px' }} className="animate-fade-in">
+          {children}
+        </div>
       )}
     </div>
   );
 }
 
-function DocumentsView({ data, patientId }) {
-  try {
-    const parsed = JSON.parse(data);
-    if (!Array.isArray(parsed) || parsed.length === 0) return <p className="caption">No documents</p>;
-    return parsed.map((doc, i) => (
-      <div key={i} style={{ marginBottom: 'var(--space-4)', paddingBottom: 'var(--space-4)', borderBottom: i < parsed.length - 1 ? '1px solid var(--color-border)' : 'none' }}>
-        <h5 style={{ fontWeight: 700, marginBottom: 'var(--space-2)', fontSize: 'var(--font-size-base)', color: 'var(--color-primary)' }}>
-          📄 {doc.document_type || 'Medical Document'}
-        </h5>
-        
-        <div className="flex items-center gap-4 mb-3">
-           <span className="caption">👤 Patient: {patientId}</span>
-           <span className="caption">📅 Date: {doc.document_date || 'Unknown'}</span>
-        </div>
-        
-        {doc.summary && (
-          <div className="mb-3">
-            <span className="caption" style={{ fontWeight: 600, display: 'block' }}>Summary:</span>
-            <p className="body-text">{doc.summary}</p>
-          </div>
-        )}
-        
-        {doc.diagnoses?.length > 0 && <p className="caption mb-1"><strong>Diagnoses:</strong> {doc.diagnoses.join(', ')}</p>}
-        {doc.medications?.length > 0 && <p className="caption mb-1"><strong>Medications:</strong> {doc.medications.join(', ')}</p>}
-        {doc.flagged_values?.length > 0 && (
-          <p className="caption mt-2" style={{ color: 'var(--color-danger)', fontWeight: 600 }}>
-            ⚠️ Flagged Findings: {doc.flagged_values.join(', ')}
-          </p>
-        )}
-        
-        {doc.file_url && (
-           <a href={doc.file_url} target="_blank" rel="noreferrer" className="btn btn-outline btn-sm mt-3" style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-             👁️ View Full Original Document
-           </a>
-        )}
-      </div>
-    ));
-  } catch {
-    return <p className="caption">{data}</p>;
+
+/* ─── Synthesis Bullets ──────────────────────────────────────────── */
+function SynthesisBullets({ synthesis }) {
+  let points = [];
+  if (Array.isArray(synthesis)) {
+    points = synthesis.map(p => typeof p === 'string' ? p.replace(/^[•\-\*]\s*/, '').trim() : String(p));
+  } else if (typeof synthesis === 'string') {
+    const lines = synthesis.split(/\n+/).map(l => l.replace(/^[•\-\*]\s*/, '').trim()).filter(Boolean);
+    if (lines.length > 1) points = lines;
+    else points = synthesis.split(/(?<=[.!?])\s+/).map(s => s.replace(/^[•\-\*]\s*/, '').trim()).filter(Boolean);
   }
+  if (points.length === 0 && synthesis) points = [String(synthesis)];
+
+  return (
+    <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+      {points.map((pt, i) => (
+        <li key={i} style={{ fontSize: '12px', lineHeight: 1.4, color: 'var(--color-text)' }}>{pt}</li>
+      ))}
+    </ul>
+  );
 }
 
-function VisitCard({ visit, isRelevant }) {
+
+/* ─── Copyable Test Chip ─────────────────────────────────────────── */
+function CopyableChip({ text }) {
+  const [copied, setCopied] = useState(false);
+  const handleClick = () => { navigator.clipboard?.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 2000); };
   return (
-    <div
-      className="card"
-      style={{
-        padding: 'var(--space-4) var(--space-5)',
-        borderLeft: isRelevant ? '4px solid var(--color-success)' : '4px solid var(--color-border)',
-        background: isRelevant ? 'var(--color-surface)' : 'var(--color-bg)',
-        opacity: isRelevant ? 1 : 0.85,
-        boxShadow: isRelevant ? 'var(--shadow-sm)' : 'none'
-      }}
-    >
-      <div className="flex items-center justify-between gap-2 mb-2">
-        <div className="flex items-center gap-2">
-          <span style={{ fontWeight: 700, fontSize: 'var(--font-size-base)', color: 'var(--color-text)' }}>
-            📅 {visit.visit_date}
-          </span>
-          <span className="badge badge-info" style={{ fontSize: 'var(--font-size-xs)' }}>
-            {visit.specialty || 'General OPD'}
-          </span>
-          {isRelevant && (
-            <span className="badge badge-success" style={{ fontSize: 'var(--font-size-xs)', fontWeight: 600 }}>
-              ⚡ AI Correlated
-            </span>
+    <button onClick={handleClick} title="Click to copy test" style={{
+      background: copied ? '#f0fdf4' : '#ffffff',
+      color: copied ? '#15803d' : '#1d4ed8',
+      border: `1px solid ${copied ? '#bbf7d0' : '#cbd5e1'}`, borderRadius: '4px',
+      padding: '2px 8px', fontSize: '11px', fontWeight: 600,
+      cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '4px',
+      transition: 'all 0.15s ease'
+    }}>
+      <span>{copied ? '✓' : '+'}</span> {text}
+    </button>
+  );
+}
+
+
+/* ─── AYUSH Pill ─────────────────────────────────────────────────── */
+function AyushPill({ label, value }) {
+  const displayVal = (value && value !== 'Not assessed') ? value : '—';
+  return (
+    <div style={{ background: '#f8fafc', padding: '8px 12px', borderRadius: '6px', border: '1px solid var(--color-border)' }}>
+      <span style={{ fontSize: '10px', fontWeight: 700, color: 'var(--color-text-secondary)', textTransform: 'uppercase' }}>{label}</span>
+      <p style={{ margin: '2px 0 0', fontWeight: 600, fontSize: '13px', color: 'var(--color-text)' }}>{displayVal}</p>
+    </div>
+  );
+}
+
+
+/* ─── Compact Visit Row (for ABHA timeline) ──────────────────────── */
+function CompactVisitRow({ visit, isRelevant }) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div style={{
+      background: '#ffffff',
+      border: '1px solid var(--color-border)',
+      borderLeft: isRelevant ? '3px solid #16a34a' : '1px solid var(--color-border)',
+      borderRadius: '6px', overflow: 'hidden'
+    }}>
+      {/* Compact row */}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        style={{
+          width: '100%', background: 'none', border: 'none', cursor: 'pointer',
+          padding: '8px 12px', display: 'flex', alignItems: 'center', gap: '8px', textAlign: 'left'
+        }}
+      >
+        <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--color-text)', flexShrink: 0 }}>
+          {visit.visit_date}
+        </span>
+        <span style={{
+          background: '#f1f5f9', color: '#334155', border: '1px solid #e2e8f0',
+          padding: '1px 6px', borderRadius: '4px', fontSize: '10px', fontWeight: 600, flexShrink: 0
+        }}>
+          {visit.specialty || 'General OPD'}
+        </span>
+        {isRelevant && (
+          <span style={{
+            background: '#f0fdf4', color: '#166534', border: '1px solid #bbf7d0', padding: '1px 6px', borderRadius: '4px',
+            fontSize: '10px', fontWeight: 600, flexShrink: 0
+          }}>AI Correlated</span>
+        )}
+        <span style={{
+          flex: 1, fontSize: '12px', fontWeight: 500, color: 'var(--color-text-secondary)',
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
+        }}>
+          — {visit.chief_complaint}
+        </span>
+        <span style={{ fontSize: '10px', color: 'var(--color-text-muted)', flexShrink: 0 }}>{expanded ? '▼' : '▶'}</span>
+      </button>
+
+      {/* Expanded detail */}
+      {expanded && (
+        <div style={{ padding: '0 12px 10px 12px', borderTop: '1px solid var(--color-border-light)' }} className="animate-fade-in">
+          {visit.relevance_reason && (
+            <div style={{
+              background: '#f8fafc',
+              border: '1px solid var(--color-border)',
+              borderRadius: '4px', padding: '6px 10px', marginTop: '8px', marginBottom: '6px',
+              fontSize: '11px', color: isRelevant ? '#166534' : 'var(--color-text-secondary)'
+            }}>
+              <strong>Clinical Correlation:</strong> {visit.relevance_reason}
+            </div>
+          )}
+          {visit.summary && (
+            <p style={{ fontSize: '12px', color: 'var(--color-text-secondary)', margin: '6px 0', lineHeight: 1.4 }}>{visit.summary}</p>
+          )}
+          {visit.diagnoses?.length > 0 && (
+            <div style={{ marginBottom: '4px' }}>
+              <span style={{ fontSize: '11px', fontWeight: 600 }}>Diagnoses: </span>
+              {visit.diagnoses.map((d, i) => (
+                <span key={i} style={{ background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', borderRadius: '3px', padding: '1px 6px', margin: '2px', fontSize: '11px', fontWeight: 600, display: 'inline-block' }}>{d}</span>
+              ))}
+            </div>
+          )}
+          {visit.medications?.length > 0 && (
+            <div style={{ marginBottom: '4px' }}>
+              <span style={{ fontSize: '11px', fontWeight: 600 }}>Medications: </span>
+              {visit.medications.map((m, i) => (
+                <span key={i} style={{ background: '#f8fafc', border: '1px solid var(--color-border)', borderRadius: '3px', padding: '1px 6px', margin: '2px', fontSize: '11px', display: 'inline-block' }}>💊 {m}</span>
+              ))}
+            </div>
+          )}
+          {visit.flagged_values?.length > 0 && (
+            <div style={{ color: 'var(--color-danger)', fontWeight: 600, fontSize: '11px', marginTop: '4px' }}>
+              Flagged: {visit.flagged_values.join(' • ')}
+            </div>
           )}
         </div>
-      </div>
-
-      <div style={{ marginBottom: 'var(--space-2)' }}>
-        <span className="caption" style={{ fontWeight: 600 }}>Complaint: </span>
-        <span className="body-text" style={{ fontWeight: 600 }}>{visit.chief_complaint}</span>
-      </div>
-
-      {visit.relevance_reason && (
-        <div
-          style={{
-            background: isRelevant ? 'rgba(16, 185, 129, 0.08)' : 'var(--color-surface)',
-            border: isRelevant ? '1px solid rgba(16, 185, 129, 0.25)' : '1px solid var(--color-border-light)',
-            borderRadius: 'var(--radius-md)',
-            padding: 'var(--space-2) var(--space-3)',
-            marginBottom: 'var(--space-3)',
-            fontSize: 'var(--font-size-sm)',
-            color: isRelevant ? 'var(--color-success-dark, #065f46)' : 'var(--color-text-muted)'
-          }}
-        >
-          <strong>💡 AI Clinical Relevance:</strong> {visit.relevance_reason}
-        </div>
-      )}
-
-      {visit.summary && (
-        <p className="body-text mb-2" style={{ fontSize: 'var(--font-size-sm)', color: 'var(--color-text-secondary)' }}>
-          {visit.summary}
-        </p>
-      )}
-
-      {visit.diagnoses?.length > 0 && (
-        <div className="caption mb-1">
-          <strong>Diagnoses: </strong>
-          {visit.diagnoses.map((diag, idx) => (
-            <span key={idx} style={{ display: 'inline-block', background: 'var(--color-primary-50)', color: 'var(--color-primary)', borderRadius: '4px', padding: '1px 6px', margin: '2px', fontSize: '11px', fontWeight: 600 }}>
-              {diag}
-            </span>
-          ))}
-        </div>
-      )}
-
-      {visit.medications?.length > 0 && (
-        <div className="caption mb-1">
-          <strong>Medications: </strong>
-          {visit.medications.map((med, idx) => (
-            <span key={idx} style={{ display: 'inline-block', background: 'var(--color-bg)', border: '1px solid var(--color-border)', borderRadius: '4px', padding: '1px 6px', margin: '2px', fontSize: '11px' }}>
-              💊 {med}
-            </span>
-          ))}
-        </div>
-      )}
-
-      {visit.flagged_values?.length > 0 && (
-        <div className="caption mt-2" style={{ color: 'var(--color-danger)', fontWeight: 600 }}>
-          ⚠️ Flagged Labs: {visit.flagged_values.join(' • ')}
-        </div>
       )}
     </div>
   );
 }
 
-function ClinicalImpressionCard({ impression, patientData }) {
-  const [isVerified, setIsVerified] = useState(false);
-  const [copiedTest, setCopiedTest] = useState(null);
 
-  if (!impression || (!impression.clinical_synthesis && (!impression.probable_diagnoses || impression.probable_diagnoses.length === 0))) {
-    return null;
-  }
+/* ═══════════════════════════════════════════════════════════════════
+   DOCUMENTS VIEW — Preserved with compact default + expand
+   ═══════════════════════════════════════════════════════════════════ */
+function DocumentsView({ data, patientId }) {
+  const [modalDoc, setModalDoc] = useState(null);
+  const [expandedDoc, setExpandedDoc] = useState(null);
 
-  const { clinical_synthesis, probable_diagnoses = [], suggested_investigations = [], critical_rule_outs = [] } = impression;
+  try {
+    const parsed = JSON.parse(data);
+    if (!Array.isArray(parsed) || parsed.length === 0) return <p style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>No documents</p>;
 
-  const handleCopyTest = (test) => {
-    navigator.clipboard?.writeText(test);
-    setCopiedTest(test);
-    setTimeout(() => setCopiedTest(null), 2000);
-  };
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+        {parsed.map((doc, i) => {
+          const meta = getModalityMeta(doc);
+          const hasFlags = doc.flagged_values?.length > 0;
+          const isExpanded = expandedDoc === i;
 
-  const getLikelihoodBadge = (likelihood) => {
-    const l = (likelihood || 'medium').toLowerCase();
-    if (l === 'high') {
-      return {
-        label: 'High Likelihood',
-        bg: 'rgba(239, 68, 68, 0.12)',
-        color: '#dc2626',
-        border: '1px solid rgba(239, 68, 68, 0.3)'
-      };
-    }
-    if (l === 'medium' || l === 'moderate') {
-      return {
-        label: 'Moderate Likelihood',
-        bg: 'rgba(245, 158, 11, 0.12)',
-        color: '#d97706',
-        border: '1px solid rgba(245, 158, 11, 0.3)'
-      };
-    }
-    return {
-      label: 'Low / Rule-Out',
-      bg: 'rgba(59, 130, 246, 0.12)',
-      color: '#2563eb',
-      border: '1px solid rgba(59, 130, 246, 0.3)'
-    };
-  };
+          return (
+            <div key={i} style={{
+              background: 'var(--color-surface)', border: '1px solid var(--color-border)',
+              borderRadius: '6px', overflow: 'hidden'
+            }}>
+              {/* Compact row */}
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px', cursor: 'pointer'
+              }} onClick={() => setExpandedDoc(isExpanded ? null : i)}>
+                <span style={{ fontSize: '15px', flexShrink: 0 }}>{meta.icon}</span>
+                <span style={{ fontWeight: 600, fontSize: '13px', color: 'var(--color-text)', flexShrink: 0 }}>
+                  {doc.document_type || 'Clinical Report'}
+                </span>
+                <span style={{ background: meta.bg, color: meta.color, border: meta.border, padding: '1px 6px', borderRadius: '4px', fontSize: '10px', fontWeight: 600, flexShrink: 0 }}>
+                  {meta.title}
+                </span>
+                {hasFlags && (
+                  <span style={{ background: '#fef2f2', color: '#991b1b', border: '1px solid #fecaca', padding: '1px 6px', borderRadius: '4px', fontSize: '10px', fontWeight: 700, flexShrink: 0 }}>
+                    ⚠️ {doc.flagged_values.length} flag{doc.flagged_values.length > 1 ? 's' : ''}
+                  </span>
+                )}
+                {/* One-line summary preview */}
+                {doc.summary && !isExpanded && (
+                  <span style={{ flex: 1, fontSize: '11px', color: 'var(--color-text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    — {doc.summary.slice(0, 80)}{doc.summary.length > 80 ? '…' : ''}
+                  </span>
+                )}
+                {/* Action buttons */}
+                <div style={{ marginLeft: 'auto', display: 'flex', gap: '6px', flexShrink: 0 }}>
+                  {doc.file_url && (
+                    <a
+                      href={doc.file_url} target="_blank" rel="noopener noreferrer"
+                      onClick={e => e.stopPropagation()}
+                      style={{
+                        background: '#1d4ed8', color: '#fff', border: 'none', borderRadius: '4px',
+                        padding: '3px 9px', fontSize: '11px', fontWeight: 600, textDecoration: 'none',
+                        display: 'inline-flex', alignItems: 'center', gap: '3px'
+                      }}
+                    >
+                      {isPdfFile(doc.file_url) ? '📄 PDF ↗' : '↗ Open'}
+                    </a>
+                  )}
+                  <span style={{ fontSize: '10px', color: 'var(--color-text-muted)', alignSelf: 'center' }}>{isExpanded ? '▼' : '▶'}</span>
+                </div>
+              </div>
 
-  return (
-    <div
-      className="card mb-6"
-      style={{
-        padding: 'var(--space-5)',
-        border: patientData?.is_ayush ? '1px solid rgba(16, 185, 129, 0.35)' : '1px solid rgba(59, 130, 246, 0.3)',
-        background: patientData?.is_ayush 
-          ? 'linear-gradient(180deg, rgba(236, 253, 245, 0.75) 0%, var(--color-surface) 100%)' 
-          : 'linear-gradient(180deg, rgba(239, 246, 255, 0.75) 0%, var(--color-surface) 100%)',
-        boxShadow: patientData?.is_ayush ? '0 4px 14px rgba(16, 185, 129, 0.08)' : '0 4px 14px rgba(37, 99, 235, 0.08)',
-        borderRadius: 'var(--radius-lg, 12px)'
-      }}
-    >
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 'var(--space-3)', marginBottom: 'var(--space-4)', borderBottom: patientData?.is_ayush ? '1px solid rgba(16, 185, 129, 0.15)' : '1px solid rgba(59, 130, 246, 0.15)', paddingBottom: 'var(--space-3)' }}>
-        <div>
-          <div className="flex items-center gap-2 mb-1 flex-wrap">
-            <span style={{ fontSize: '1.4rem' }}>{patientData?.is_ayush ? '🌿' : '🧠'}</span>
-            <h3 style={{ fontSize: 'var(--font-size-lg)', fontWeight: 800, color: 'var(--color-text)', letterSpacing: '-0.01em' }}>
-              {patientData?.is_ayush 
-                ? 'AI Clinical Decision Support & Ayurvedic Insights' 
-                : 'AI Clinical Decision Support & Differential Insights'}
-            </h3>
-            <span 
-              className="badge" 
-              style={{ 
-                background: patientData?.is_ayush ? '#d1fae5' : undefined, 
-                color: patientData?.is_ayush ? '#065f46' : undefined,
-                border: patientData?.is_ayush ? '1px solid #a7f3d0' : undefined,
-                fontSize: '11px', 
-                fontWeight: 700, 
-                padding: '3px 8px' 
-              }}
-            >
-              {patientData?.is_ayush ? 'AYUSH CDSS v2.0' : 'CDSS v2.0'}
-            </span>
-          </div>
-          <p className="caption" style={{ color: 'var(--color-text-secondary)' }}>
-            {patientData?.is_ayush 
-              ? 'Integrative cross-modal synthesis of presenting complaints, doshic patterns, lab reports, and past ABHA records'
-              : 'Cross-modal synthesis of presenting symptoms, scanned lab reports, and verified ABHA health records'}
-          </p>
-        </div>
-
-        {/* Doctor Verification Control */}
-        <button
-          onClick={() => setIsVerified(!isVerified)}
-          className={`btn btn-sm ${isVerified ? 'btn-primary' : 'btn-outline'}`}
-          style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontWeight: 600, transition: 'all 0.2s ease' }}
-        >
-          {isVerified ? '✅ Verified by Doctor' : '👨‍⚕️ Click to Verify Impression'}
-        </button>
-      </div>
-
-      {/* Clinical Synthesis Executive Summary */}
-      {clinical_synthesis && (
-        <div
-          style={{
-            background: 'rgba(255, 255, 255, 0.92)',
-            borderLeft: '4px solid var(--color-primary)',
-            padding: 'var(--space-3) var(--space-4)',
-            borderRadius: '0 var(--radius-md) var(--radius-md) 0',
-            marginBottom: 'var(--space-4)',
-            boxShadow: '0 1px 3px rgba(0,0,0,0.04)'
-          }}
-        >
-          <div className="flex items-center gap-1.5 mb-2">
-            <span style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', color: 'var(--color-primary)', letterSpacing: '0.05em' }}>
-              Clinical Synthesis Overview
-            </span>
-          </div>
-          <ul style={{ margin: 0, paddingLeft: '1.25rem', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            {(() => {
-              let points = [];
-              if (Array.isArray(clinical_synthesis)) {
-                points = clinical_synthesis.map(p => typeof p === 'string' ? p.replace(/^[•\-\*]\s*/, '').trim() : String(p));
-              } else if (typeof clinical_synthesis === 'string') {
-                const lines = clinical_synthesis.split(/\n+/).map(l => l.replace(/^[•\-\*]\s*/, '').trim()).filter(Boolean);
-                if (lines.length > 1) {
-                  points = lines;
-                } else {
-                  points = clinical_synthesis.split(/(?<=[.!?])\s+/).map(s => s.replace(/^[•\-\*]\s*/, '').trim()).filter(Boolean);
-                }
-              }
-              if (points.length === 0 && clinical_synthesis) {
-                points = [String(clinical_synthesis)];
-              }
-              return points.map((pt, pIdx) => (
-                <li key={pIdx} className="body-text" style={{ fontSize: '0.92rem', lineHeight: 1.45, color: 'var(--color-text)' }}>
-                  {pt}
-                </li>
-              ));
-            })()}
-          </ul>
-        </div>
-      )}
-
-      {/* Probable Diagnoses / Differentials */}
-      {probable_diagnoses.length > 0 && (
-        <div style={{ marginBottom: 'var(--space-4)' }}>
-          <h4 style={{ fontWeight: 700, fontSize: '0.95rem', color: 'var(--color-text)', marginBottom: 'var(--space-3)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <span>🎯</span> Probable Diagnoses & Clinical Evidence ({probable_diagnoses.length})
-          </h4>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 'var(--space-3)' }}>
-            {probable_diagnoses.map((diag, idx) => {
-              const badge = getLikelihoodBadge(diag.likelihood);
-              return (
-                <div
-                  key={idx}
-                  style={{
-                    background: 'var(--color-surface)',
-                    border: '1px solid var(--color-border)',
-                    borderRadius: 'var(--radius-md)',
-                    padding: 'var(--space-3) var(--space-4)',
-                    boxShadow: '0 2px 5px rgba(0,0,0,0.03)',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    justifyContent: 'space-between'
-                  }}
-                >
-                  <div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px', marginBottom: '6px' }}>
-                      <span style={{ fontWeight: 700, fontSize: '0.95rem', color: 'var(--color-text)' }}>
-                        {diag.condition}
-                      </span>
-                      <span
-                        style={{
-                          background: badge.bg,
-                          color: badge.color,
-                          border: badge.border,
-                          padding: '2px 8px',
-                          borderRadius: '12px',
-                          fontSize: '11px',
-                          fontWeight: 700,
-                          whiteSpace: 'nowrap'
-                        }}
-                      >
-                        {badge.label}
-                      </span>
+              {/* Expanded detail */}
+              {isExpanded && (
+                <div style={{ padding: '0 12px 12px 12px', borderTop: '1px solid var(--color-border-light)' }} className="animate-fade-in">
+                  {doc.summary && (
+                    <div style={{ background: 'var(--color-bg)', borderRadius: '4px', padding: '8px 12px', marginTop: '8px', marginBottom: '8px' }}>
+                      <p style={{ fontSize: '12px', margin: 0, lineHeight: 1.45, color: 'var(--color-text)' }}>{doc.summary}</p>
                     </div>
-                    {diag.supporting_evidence && (
-                      <p className="caption" style={{ color: 'var(--color-text-secondary)', fontSize: '12px', lineHeight: 1.4 }}>
-                        <strong>💡 Evidence:</strong> {diag.supporting_evidence}
-                      </p>
+                  )}
+                  {doc.diagnoses?.length > 0 && (
+                    <div style={{ marginBottom: '6px' }}>
+                      <span style={{ fontSize: '11px', fontWeight: 600 }}>Findings: </span>
+                      {doc.diagnoses.map((d, idx) => (
+                        <span key={idx} style={{ background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', borderRadius: '3px', padding: '1px 6px', margin: '2px', fontSize: '11px', fontWeight: 600, display: 'inline-block' }}>{d}</span>
+                      ))}
+                    </div>
+                  )}
+                  {doc.medications?.length > 0 && (
+                    <div style={{ marginBottom: '6px' }}>
+                      <span style={{ fontSize: '11px', fontWeight: 600 }}>Medications: </span>
+                      {doc.medications.map((m, idx) => (
+                        <span key={idx} style={{ background: 'var(--color-bg)', border: '1px solid var(--color-border)', borderRadius: '3px', padding: '1px 6px', margin: '2px', fontSize: '11px', display: 'inline-block' }}>💊 {m}</span>
+                      ))}
+                    </div>
+                  )}
+                  {hasFlags && (
+                    <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '4px', padding: '6px 10px', marginBottom: '6px' }}>
+                      <span style={{ color: '#991b1b', fontWeight: 700, fontSize: '11px' }}>⚠️ Flagged Abnormalities:</span>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '4px' }}>
+                        {doc.flagged_values.map((v, idx) => (
+                          <span key={idx} style={{ background: '#fee2e2', color: '#991b1b', border: '1px solid #fca5a5', borderRadius: '3px', padding: '1px 6px', fontSize: '11px', fontWeight: 600 }}>{v}</span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {/* Image thumbnail + OCR/AI synthesis modal */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px' }}>
+                    {doc.file_url && isImageFile(doc.file_url) && (
+                      <img
+                        src={doc.file_url} alt={doc.document_type || 'Scan'}
+                        onClick={() => window.open(doc.file_url, '_blank')}
+                        style={{ width: 40, height: 40, objectFit: 'cover', borderRadius: '4px', border: '1px solid var(--color-border)', cursor: 'pointer' }}
+                      />
                     )}
+                    {doc.file_url && (
+                      <a href={doc.file_url} target="_blank" rel="noopener noreferrer"
+                        style={{ fontSize: '11px', fontWeight: 600, color: '#1d4ed8', textDecoration: 'none' }}>
+                        {isPdfFile(doc.file_url) ? '📄 Open Original PDF ↗' : '👁️ Open Full Document ↗'}
+                      </a>
+                    )}
+                    <button
+                      onClick={() => setModalDoc(doc)}
+                      style={{ background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '4px', padding: '3px 10px', fontSize: '11px', fontWeight: 600, cursor: 'pointer', color: '#334155' }}
+                    >🔍 AI Synthesis & OCR</button>
                   </div>
                 </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
+              )}
+            </div>
+          );
+        })}
 
-      {/* Two Column Footer: Suggested Investigations & Critical Rule-Outs */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 'var(--space-3)', paddingTop: 'var(--space-2)' }}>
-        
-        {/* Suggested Investigations */}
-        {suggested_investigations.length > 0 && (
+        {/* ═══ Full Inspection Modal (preserved from original) ═══ */}
+        {modalDoc && (
           <div
             style={{
-              background: 'rgba(255, 255, 255, 0.7)',
-              border: '1px solid var(--color-border-light)',
-              borderRadius: 'var(--radius-md)',
-              padding: 'var(--space-3)'
+              position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+              backgroundColor: 'rgba(15,23,42,0.65)', backdropFilter: 'blur(3px)',
+              zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px'
             }}
+            onClick={() => setModalDoc(null)}
           >
-            <span style={{ fontSize: '12px', fontWeight: 700, color: 'var(--color-text)', display: 'block', marginBottom: '8px' }}>
-              🧪 Suggested Diagnostic Workup:
-            </span>
-            <div className="flex flex-wrap gap-2">
-              {suggested_investigations.map((test, idx) => (
-                <button
-                  key={idx}
-                  onClick={() => handleCopyTest(test)}
-                  title="Click to copy test name"
-                  style={{
-                    background: copiedTest === test ? 'var(--color-success-50, #d1fae5)' : 'var(--color-surface)',
-                    color: copiedTest === test ? 'var(--color-success-dark, #065f46)' : 'var(--color-primary)',
-                    border: '1px solid var(--color-border)',
-                    borderRadius: '6px',
-                    padding: '3px 10px',
-                    fontSize: '12px',
-                    fontWeight: 600,
-                    cursor: 'pointer',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '4px',
-                    transition: 'all 0.15s ease'
-                  }}
-                >
-                  <span>{copiedTest === test ? '✓' : '+'}</span> {test}
-                </button>
-              ))}
+            <div
+              style={{
+                background: 'var(--color-surface)', borderRadius: '10px',
+                maxWidth: '960px', width: '100%', maxHeight: '90vh',
+                display: 'flex', flexDirection: 'column',
+                boxShadow: '0 20px 25px -5px rgba(0,0,0,0.25)', overflow: 'hidden',
+                border: '1px solid var(--color-border)'
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Modal Header */}
+              <div style={{
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                padding: '12px 18px', borderBottom: '1px solid var(--color-border)', background: 'var(--color-bg)'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '1.1rem' }}>{getModalityMeta(modalDoc).icon}</span>
+                  <div>
+                    <h4 style={{ margin: 0, fontWeight: 700, fontSize: '0.95rem' }}>{modalDoc.document_type || 'Visual Document'}</h4>
+                    <span style={{ fontSize: '11px', color: 'var(--color-text-muted)' }}>{getModalityMeta(modalDoc).title} • {modalDoc.document_date || 'Visual Scan'}</span>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <a href={modalDoc.file_url} target="_blank" rel="noopener noreferrer"
+                    style={{
+                      background: '#1d4ed8', color: '#fff', border: 'none', borderRadius: '4px',
+                      padding: '4px 10px', fontSize: '11px', fontWeight: 600, textDecoration: 'none',
+                      display: 'inline-flex', alignItems: 'center', gap: '4px'
+                    }}>
+                    {isPdfFile(modalDoc.file_url) ? '📄 Open PDF ↗' : '↗ Open File'}
+                  </a>
+                  <button onClick={() => setModalDoc(null)} style={{
+                    background: 'none', border: 'none', fontSize: '1.2rem', cursor: 'pointer',
+                    color: 'var(--color-text-muted)', padding: '2px 6px'
+                  }}>✕</button>
+                </div>
+              </div>
+
+              {/* Modal Body */}
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: (isImageFile(modalDoc.file_url) || isPdfFile(modalDoc.file_url)) ? '1.3fr 1fr' : '1fr',
+                gap: '16px', padding: '16px', overflowY: 'auto', maxHeight: 'calc(90vh - 65px)'
+              }}>
+                {/* PDF Preview */}
+                {isPdfFile(modalDoc.file_url) && (
+                  <div style={{ background: '#0f172a', borderRadius: '6px', overflow: 'hidden', height: '520px', display: 'flex', flexDirection: 'column', border: '1px solid var(--color-border)' }}>
+                    <div style={{ background: '#1e293b', padding: '6px 12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ color: '#cbd5e1', fontSize: '11px', fontWeight: 600 }}>📄 PDF Preview</span>
+                      <a href={modalDoc.file_url} target="_blank" rel="noopener noreferrer" style={{ color: '#93c5fd', fontSize: '11px', textDecoration: 'underline' }}>Full Tab ↗</a>
+                    </div>
+                    <iframe src={modalDoc.file_url} title="PDF" style={{ width: '100%', flex: 1, border: 'none' }} />
+                  </div>
+                )}
+                {/* Image Preview */}
+                {isImageFile(modalDoc.file_url) && (
+                  <div style={{ background: '#0f172a', borderRadius: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '12px', minHeight: '320px' }}>
+                    <img src={modalDoc.file_url} alt="Scan"
+                      style={{ maxWidth: '100%', maxHeight: '500px', objectFit: 'contain', borderRadius: '4px', boxShadow: '0 4px 12px rgba(0,0,0,0.5)', cursor: 'pointer' }}
+                      onClick={() => window.open(modalDoc.file_url, '_blank')} title="Click to view full" />
+                  </div>
+                )}
+
+                {/* AI Extraction Details */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <div style={{ background: 'var(--color-bg)', padding: '10px 12px', borderRadius: '4px', border: '1px solid var(--color-border-light)' }}>
+                    <span style={{ fontWeight: 700, fontSize: '11px', display: 'block', marginBottom: '3px' }}>AI Clinical Synthesis:</span>
+                    <p style={{ fontSize: '12px', margin: 0, lineHeight: 1.45 }}>{modalDoc.summary}</p>
+                  </div>
+                  {modalDoc.flagged_values?.length > 0 && (
+                    <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '4px', padding: '8px 12px' }}>
+                      <strong style={{ color: '#991b1b', fontSize: '11px', display: 'block', marginBottom: '3px' }}>⚠️ Flagged Abnormalities:</strong>
+                      <ul style={{ margin: 0, paddingLeft: '16px', fontSize: '12px', color: '#991b1b' }}>
+                        {modalDoc.flagged_values.map((v, idx) => <li key={idx}>{v}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                  {modalDoc.diagnoses?.length > 0 && (
+                    <div>
+                      <strong style={{ fontSize: '11px', display: 'block', marginBottom: '3px' }}>Diagnoses:</strong>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                        {modalDoc.diagnoses.map((d, idx) => (
+                          <span key={idx} style={{ background: '#eff6ff', color: '#1d4ed8', border: '1px solid #bfdbfe', borderRadius: '3px', padding: '1px 6px', fontSize: '11px', fontWeight: 600 }}>{d}</span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {modalDoc.medications?.length > 0 && (
+                    <div>
+                      <strong style={{ fontSize: '11px', display: 'block', marginBottom: '3px' }}>Medications:</strong>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                        {modalDoc.medications.map((m, idx) => <span key={idx} style={{ background: 'var(--color-bg)', border: '1px solid var(--color-border)', borderRadius: '3px', padding: '1px 6px', fontSize: '11px' }}>💊 {m}</span>)}
+                      </div>
+                    </div>
+                  )}
+                  {modalDoc.raw_text && (
+                    <div>
+                      <strong style={{ fontSize: '10px', color: 'var(--color-text-muted)', display: 'block', marginBottom: '3px', textTransform: 'uppercase' }}>Raw OCR Transcript:</strong>
+                      <div style={{
+                        background: 'var(--color-bg)', border: '1px solid var(--color-border-light)', borderRadius: '4px',
+                        padding: '6px 10px', fontSize: '11px', maxHeight: '120px', overflowY: 'auto',
+                        whiteSpace: 'pre-wrap', color: 'var(--color-text-secondary)', fontFamily: 'monospace'
+                      }}>{modalDoc.raw_text}</div>
+                    </div>
+                  )}
+                  <div style={{ marginTop: '2px' }}>
+                    <a href={modalDoc.file_url} target="_blank" rel="noopener noreferrer"
+                      style={{
+                        background: '#1d4ed8', color: '#fff', borderRadius: '4px',
+                        padding: '5px 12px', fontSize: '11px', fontWeight: 600, textDecoration: 'none',
+                        display: 'inline-flex', alignItems: 'center', gap: '4px'
+                      }}>
+                      {isPdfFile(modalDoc.file_url) ? '📄 Open PDF in New Tab ↗' : '↗ Open In New Tab'}
+                    </a>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         )}
-
-        {/* Critical Rule-Outs */}
-        {critical_rule_outs.length > 0 && (
-          <div
-            style={{
-              background: 'rgba(254, 242, 242, 0.75)',
-              border: '1px solid rgba(239, 68, 68, 0.2)',
-              borderRadius: 'var(--radius-md)',
-              padding: 'var(--space-3)'
-            }}
-          >
-            <span style={{ fontSize: '12px', fontWeight: 700, color: '#dc2626', display: 'block', marginBottom: '8px' }}>
-              ⚠️ Critical Rule-Outs (High-Risk Conditions):
-            </span>
-            <div className="flex flex-wrap gap-2">
-              {critical_rule_outs.map((ruleOut, idx) => (
-                <span
-                  key={idx}
-                  style={{
-                    background: 'rgba(239, 68, 68, 0.1)',
-                    color: '#b91c1c',
-                    border: '1px solid rgba(239, 68, 68, 0.25)',
-                    borderRadius: '6px',
-                    padding: '3px 9px',
-                    fontSize: '12px',
-                    fontWeight: 600
-                  }}
-                >
-                  ⛔ {ruleOut}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
-
       </div>
-    </div>
-  );
+    );
+  } catch {
+    return <p style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>{data}</p>;
+  }
 }

@@ -97,6 +97,24 @@ export default function DocumentScan() {
             <input ref={fileInputRef} type="file" accept="image/*,.pdf" capture="environment"
               onChange={handleFileUpload} style={{ display: 'none' }} />
 
+
+
+            <div style={{
+              background: 'rgba(59, 130, 246, 0.05)',
+              border: '1px dashed rgba(59, 130, 246, 0.3)',
+              borderRadius: 'var(--radius-md)',
+              padding: '8px 12px',
+              marginBottom: 'var(--space-4)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              fontSize: '12px',
+              color: 'var(--color-text-secondary)'
+            }}>
+              <span>💡</span>
+              <span><strong>Clinical Vision:</strong> Place scans or reports flat under good lighting. AI auto-detects imaging modality and transcribes findings without manual selection.</span>
+            </div>
+
             <p className="caption text-center mb-4">
               {t('docs_supported')}
             </p>

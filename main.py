@@ -33,56 +33,112 @@ import ollama
 OLLAMA_MODEL = "qwen2.5:7b"
 FALLBACK_MODEL = "qwen2.5:7b"
 VISION_MODEL = "moondream"
+DOC_EXTRACTION_MODEL = "qwen2.5:7b"
 
-# Load Whisper on CUDA GPU (int8_float16) for blazing-fast 0.5s speech transcription
-print("Loading Faster-Whisper on CUDA GPU (int8_float16)...")
+# ── Dynamic Whisper STT (CUDA GPU with Lifecycle Management) ──
+import threading
+_whisper_lock = threading.Lock()
+whisper_pipeline = None
+
+def get_whisper_pipeline():
+    """Lazily load Faster-Whisper on CUDA GPU (int8_float16) for blazing-fast 0.5s speech transcription."""
+    global whisper_pipeline
+    with _whisper_lock:
+        if whisper_pipeline is None:
+            print("⚡ Loading Faster-Whisper on CUDA GPU (int8_float16)...")
+            try:
+                from faster_whisper import WhisperModel
+                whisper_pipeline = WhisperModel("large-v3", device="cuda", compute_type="int8_float16")
+                print("✅ Faster-Whisper loaded on CUDA GPU (transcription latency: ~0.5s).")
+            except Exception as e:
+                print(f"❌ Faster-Whisper failed to load: {e}")
+                whisper_pipeline = None
+        return whisper_pipeline
+
+def unload_whisper():
+    """
+    Deload Faster-Whisper after conversation finishes to return ~2.5GB VRAM to GPU.
+    Gives 100% VRAM headroom to Ollama LLM synthesis and Moondream vision.
+    """
+    global whisper_pipeline
+    with _whisper_lock:
+        if whisper_pipeline is not None:
+            print("🧹 Deloading Faster-Whisper from GPU to maximize VRAM for LLM & Vision...")
+            try:
+                del whisper_pipeline
+            except Exception:
+                pass
+            whisper_pipeline = None
+            import gc
+            gc.collect()
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+            print("✅ Faster-Whisper deloaded. Full GPU VRAM returned to system.")
+
+# Warm up Whisper on backend startup so initial patient speech transcription is instant
 try:
-    from faster_whisper import WhisperModel
-    whisper_pipeline = WhisperModel("large-v3", device="cuda", compute_type="int8_float16")
-    print("✅ Whisper loaded on CUDA GPU (transcription latency: ~0.5s).")
+    get_whisper_pipeline()
 except Exception as e:
-    print(f"❌ Whisper failed: {e}")
-    whisper_pipeline = None
+    print(f"Initial Whisper warmup note: {e}")
 
 
 # ── LLM Helpers ──
-def call_llm(prompt: str, image_bytes: Optional[bytes] = None) -> str:
-    """Call Ollama. If image_bytes provided, uses moondream."""
-    messages = [{'role': 'user', 'content': prompt}]
-    model = OLLAMA_MODEL
+OLLAMA_KEEP_ALIVE = "1m"  # Auto-unload models after 1 min idle to reclaim ~4.7 GB VRAM
 
+def call_llm(prompt: str, image_bytes: Optional[bytes] = None, model: Optional[str] = None) -> str:
+    """Call Moondream for vision, or Ollama for text reasoning."""
     if image_bytes:
+        print(f"→ {VISION_MODEL} Vision (Ollama GPU)...")
+        messages = [{'role': 'user', 'content': prompt}]
         b64 = base64.b64encode(image_bytes).decode('utf-8')
         messages[0]['images'] = [b64]
-        model = VISION_MODEL
-        print(f"→ Ollama Vision ({model})...")
-        response = ollama.chat(model=model, messages=messages, format='json', options={
-            'num_ctx': 2048,
-            'temperature': 0.1
-        })
-        return response['message']['content']
+        try:
+            response = ollama.chat(model=VISION_MODEL, messages=messages, options={
+                'num_ctx': 1024,
+                'temperature': 0.1
+            }, keep_alive=OLLAMA_KEEP_ALIVE)
+            return response['message']['content']
+        except Exception as vl_err:
+            print(f"⚠️ {VISION_MODEL} error ({vl_err})")
+            raise vl_err
 
-    print(f"→ Ollama ({model})...")
+    messages = [{'role': 'user', 'content': prompt}]
+    target_model = model or OLLAMA_MODEL
+
+    print(f"→ Ollama ({target_model})...")
     try:
-        response = ollama.chat(model=model, messages=messages, format='json', options={
+        response = ollama.chat(model=target_model, messages=messages, format='json', options={
             'num_ctx': 4096,       # 4k context takes only 250MB KV cache (prevents VRAM overflow)
             'temperature': 0.1     
-        })
+        }, keep_alive=OLLAMA_KEEP_ALIVE)
         return response['message']['content']
     except Exception as e:
-        if model != FALLBACK_MODEL:
-            print(f"⚠️ {model} not ready or failed ({e}), falling back to {FALLBACK_MODEL}...")
+        if target_model != FALLBACK_MODEL:
+            print(f"⚠️ {target_model} not ready or failed ({e}), falling back to {FALLBACK_MODEL}...")
             response = ollama.chat(model=FALLBACK_MODEL, messages=messages, format='json', options={
                 'num_ctx': 32768,
                 'temperature': 0.1
-            })
+            }, keep_alive=OLLAMA_KEEP_ALIVE)
             return response['message']['content']
         raise e
 
 
 def extract_json_string(text: str) -> str:
-    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-    return match.group(1) if match else text
+    if not text:
+        return "{}"
+    clean = text.strip()
+    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", clean, re.DOTALL)
+    if match:
+        return match.group(1)
+    first_brace = clean.find("{")
+    last_brace = clean.rfind("}")
+    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+        return clean[first_brace:last_brace + 1]
+    return clean
 
 
 def unwrap_json(data: dict) -> dict:
@@ -353,57 +409,42 @@ CATEGORY_QUESTIONS = {
     }
 }
 
+# Pre-compiled symptom category regexes (compiled once at module load, not per-call)
+_SYMPTOM_REGEXES = [
+    ("chest_pain", re.compile(
+        r"chest|सीने|सीना|छाती|दिल|सांस|breath|palpitation|घबराहट|धड़कन|angina|cardiac|"
+        r"seene|seena|chhati|chati|dil|saans|sans|ghabrahat|dhadkan|நெஞ்சு|மார்பு|గుండె|छातीत|বুক",
+        re.IGNORECASE
+    )),
+    ("stomach_pain", re.compile(
+        r"stomach|abdomen|abdominal|belly|पेट|pet|pait|vomit|उल्टी|ulti|loose motion|"
+        r"दस्त|dast|acidity|gas|गैस|जलन|jalan|constipation|कब्ज|kabz|ulcer|appetite|भूख|bhook|வயிறு|కడుపు|पोट|পেট",
+        re.IGNORECASE
+    )),
+    ("headache", re.compile(
+        r"headache|head pain|head|सिर|सर|sir|sar|migraine|माइग्रेन|dizziness|चक्कर|chakkar|"
+        r"faint|बेहोश|behosh|vision|धुंधला|stroke|தலைவலி|తలనొప్పి|डोकेदुखी|মাথাব্যথা",
+        re.IGNORECASE
+    )),
+    ("fever", re.compile(
+        r"fever|बुखार|ताप|bukhar|taap|chills|ठंड|thand|shivering|कंपकंपी|kampkampi|"
+        r"dengue|डेंगू|malaria|मलेरिया|typhoid|टाइफाइड|viral|காய்ச்சல்|జ్వరం|জ্বর",
+        re.IGNORECASE
+    )),
+    ("joint_pain", re.compile(
+        r"joint|जोड़|jod|jodon|knee|घुटने|ghutne|ghutna|back pain|कमर|kamar|spine|रीढ़|"
+        r"bone|हड्डी|haddi|swelling|सूजन|sujan|arthritis|गठिया|gathiya|fracture|stiffness|जकड़न|jakdan|மூட்டு|కీళ్ల|సాంధేదుఖీ|গাঁটের ব্যথা",
+        re.IGNORECASE
+    )),
+]
+
 def detect_symptom_category(transcript: str) -> str:
-    """Classifies patient transcript into targeted symptom tracks using multilingual + Hinglish keyword heuristics."""
+    """Classifies patient transcript into targeted symptom tracks using pre-compiled multilingual regexes."""
     if not transcript:
         return "general"
-    t = transcript.lower()
-
-    # 1. Chest Pain & Cardiac / Respiratory
-    chest_keywords = [
-        "chest", "सीने", "सीना", "छाती", "दिल", "सांस", "breath", "palpitation",
-        "घबराहट", "धड़कन", "angina", "cardiac", "seene", "seena", "chhati", "chati",
-        "dil", "saans", "sans", "ghabrahat", "dhadkan", "நெஞ்சு", "மார்பு", "గుండె", "छातीत", "বুক"
-    ]
-    if any(k in t for k in chest_keywords):
-        return "chest_pain"
-
-    # 2. Stomach & GI / Abdominal
-    stomach_keywords = [
-        "stomach", "abdomen", "abdominal", "belly", "पेट", "pet", "pait", "vomit", "उल्टी",
-        "ulti", "loose motion", "दस्त", "dast", "acidity", "gas", "गैस", "जलन", "jalan",
-        "constipation", "कब्ज", "kabz", "ulcer", "appetite", "भूख", "bhook", "வயிறு", "కడుపు", "पोट", "পেট"
-    ]
-    if any(k in t for k in stomach_keywords):
-        return "stomach_pain"
-
-    # 3. Headache & Neurological / Dizziness
-    headache_keywords = [
-        "headache", "head pain", "head", "सिर", "सर", "sir", "sar", "migraine", "माइग्रेन",
-        "dizziness", "चक्कर", "chakkar", "faint", "बेहोश", "behosh", "vision", "धुंधला", "stroke",
-        "தலைவலி", "తలనొప్పి", "डोकेदुखी", "মাথাব্যথা"
-    ]
-    if any(k in t for k in headache_keywords):
-        return "headache"
-
-    # 4. Fever & Infections / Chills
-    fever_keywords = [
-        "fever", "बुखार", "ताप", "bukhar", "taap", "chills", "ठंड", "thand", "shivering", "कंपकंपी",
-        "kampkampi", "dengue", "डेंगू", "malaria", "मलेरिया", "typhoid", "टाइफाइड", "viral",
-        "காய்ச்சல்", "జ్వరం", "জ্বর"
-    ]
-    if any(k in t for k in fever_keywords):
-        return "fever"
-
-    # 5. Joint, Orthopedic & Back Pain
-    joint_keywords = [
-        "joint", "जोड़", "jod", "jodon", "knee", "घुटने", "ghutne", "ghutna", "back pain", "कमर", "kamar",
-        "spine", "रीढ़", "bone", "हड्डी", "haddi", "swelling", "सूजन", "sujan", "arthritis", "गठिया", "gathiya",
-        "fracture", "stiffness", "जकड़न", "jakdan", "மூட்டு", "కీళ్ల", "సాంధేదుఖీ", "গাঁটের ব্যথা"
-    ]
-    if any(k in t for k in joint_keywords):
-        return "joint_pain"
-
+    for category, pattern in _SYMPTOM_REGEXES:
+        if pattern.search(transcript):
+            return category
     return "general"
 
 def get_phase_question(language: str, phase, category: str = "general") -> str:
@@ -471,12 +512,22 @@ FOLLOWUP_JSON_TEMPLATE = """{
 }"""
 
 DOCUMENT_JSON_TEMPLATE = """{
-  "document_type": "Name or type of report (e.g. CBC, MRI, Prescription)",
-  "diagnoses": ["list of diagnoses"],
-  "medications": ["medicine with dose"],
-  "flagged_values": ["abnormal lab values"],
-  "document_date": "date or Unknown",
-  "summary": "Brief summary"
+  "document_type": "Specific name of scan or report (e.g. Head X-Ray, 12-Lead ECG, Knee Radiograph, Biopsy, CBC, Prescription)",
+  "modality": "radiology|ecg|pathology|endoscopy|document",
+  "diagnoses": ["list of clinical diagnoses/radiological findings"],
+  "medications": ["medicine with dose if prescription, else empty list"],
+  "flagged_values": [
+    {
+      "test_name": "Parameter name (e.g. FEV1, Hemoglobin, RBC)",
+      "measured_value": 0.0,
+      "unit": "unit of measurement (e.g. L, L/s, g/dL, mg/dL, /cumm)",
+      "reference_low": 0.0,
+      "reference_high": 0.0,
+      "status": "Low or High or Normal"
+    }
+  ],
+  "document_date": "date on document or 'Visual Scan'",
+  "summary": "Brief concise clinical summary"
 }"""
 
 class PatientExtraction(BaseModel):
@@ -503,6 +554,7 @@ class FollowUpResponse(BaseModel):
 
 class DocumentExtraction(BaseModel):
     document_type: str = "Medical Document"
+    modality: str = "document"
     diagnoses: List[str] = []
     medications: List[str] = []
     flagged_values: List[str] = []
@@ -992,6 +1044,30 @@ def is_denial_response(text: str) -> bool:
 
 
 # ── Clinical HPI Cleaner (Eliminates Cross-Section Redundancy) ──
+# Pre-compiled at module level — avoids re-compiling 14 regex patterns on every /api/patient-summary poll
+_HPI_FILTER_RE = re.compile('|'.join([
+    # Past medical history mentions / denials
+    r'\b(?:past\s+(?:chronic\s+)?medical\s+(?:history|conditions?|illness|issues?)|past\s+medical|past\s+surgical|past\s+illness)\b',
+    r'\b(?:denies\s+(?:any\s+)?past\s+(?:chronic\s+)?(?:medical|illness|conditions?))\b',
+    r'\b(?:no\s+significant\s+past\s+medical)\b',
+    r'\b(?:reports?\s+no\s+past\s+(?:medical|chronic))\b',
+    # Family history mentions / denials
+    r'\b(?:family\s+history|hereditary\s+conditions?|family\s+members?\s+(?:have|had))\b',
+    r'\b(?:denies\s+(?:any\s+)?(?:significant\s+)?family\s+history)\b',
+    r'\b(?:no\s+significant\s+family\s+history)\b',
+    # Allergies mentions / denials
+    r'\b(?:drug\s+or\s+food\s+allergies|known\s+drug|food\s+allergies|allergic\s+to\s+(?:any\s+)?(?:medication|food|drugs?)|allergies\b|nkda\b)',
+    r'\b(?:denies\s+(?:any\s+)?(?:known\s+)?(?:drug|food\s+)?allergies)\b',
+    r'\b(?:no\s+known\s+(?:drug|food\s+)?allergies)\b',
+    # Personal / Lifestyle mentions / denials
+    r'\b(?:lifestyle\s+or\s+habit|lifestyle\s+risks?|habit\s+risks?|smoking\s+(?:or|and)\s+alcohol|tobacco|substance\s+use)\b',
+    r'\b(?:denies\s+(?:any\s+)?significant\s+lifestyle)\b',
+    r'\b(?:no\s+significant\s+lifestyle)\b',
+    # Systemic ROS checklist denials
+    r'\b(?:associated\s+systemic\s+symptoms|denies\s+(?:any\s+)?associated\s+systemic|review\s+of\s+systems)\b',
+]), re.IGNORECASE)
+_HPI_SENTENCE_SPLIT_RE = re.compile(r'(?<=[.!?])\s+')
+
 def clean_hpi_text(hpi: str) -> str:
     """
     Cleans History of Present Illness (HPI) text by removing sentences that mistakenly 
@@ -1001,38 +1077,15 @@ def clean_hpi_text(hpi: str) -> str:
     if not hpi or not isinstance(hpi, str) or not hpi.strip():
         return hpi
 
-    patterns = [
-        # Past medical history mentions / denials
-        r'\b(?:past\s+(?:chronic\s+)?medical\s+(?:history|conditions?|illness|issues?)|past\s+medical|past\s+surgical|past\s+illness)\b',
-        r'\b(?:denies\s+(?:any\s+)?past\s+(?:chronic\s+)?(?:medical|illness|conditions?))\b',
-        r'\b(?:no\s+significant\s+past\s+medical)\b',
-        r'\b(?:reports?\s+no\s+past\s+(?:medical|chronic))\b',
-        # Family history mentions / denials
-        r'\b(?:family\s+history|hereditary\s+conditions?|family\s+members?\s+(?:have|had))\b',
-        r'\b(?:denies\s+(?:any\s+)?(?:significant\s+)?family\s+history)\b',
-        r'\b(?:no\s+significant\s+family\s+history)\b',
-        # Allergies mentions / denials
-        r'\b(?:drug\s+or\s+food\s+allergies|known\s+drug|food\s+allergies|allergic\s+to\s+(?:any\s+)?(?:medication|food|drugs?)|allergies\b|nkda\b)',
-        r'\b(?:denies\s+(?:any\s+)?(?:known\s+)?(?:drug|food\s+)?allergies)\b',
-        r'\b(?:no\s+known\s+(?:drug|food\s+)?allergies)\b',
-        # Personal / Lifestyle mentions / denials
-        r'\b(?:lifestyle\s+or\s+habit|lifestyle\s+risks?|habit\s+risks?|smoking\s+(?:or|and)\s+alcohol|tobacco|substance\s+use)\b',
-        r'\b(?:denies\s+(?:any\s+)?significant\s+lifestyle)\b',
-        r'\b(?:no\s+significant\s+lifestyle)\b',
-        # Systemic ROS checklist denials
-        r'\b(?:associated\s+systemic\s+symptoms|denies\s+(?:any\s+)?associated\s+systemic|review\s+of\s+systems)\b',
-    ]
-    filter_re = re.compile('|'.join(patterns), re.IGNORECASE)
-
     cleaned_lines = []
     for line in hpi.splitlines():
         line_str = line.strip()
         if not line_str:
             continue
         
-        if filter_re.search(line_str):
-            sentences = re.split(r'(?<=[.!?])\s+', line_str)
-            valid_sentences = [s.strip() for s in sentences if s.strip() and not filter_re.search(s)]
+        if _HPI_FILTER_RE.search(line_str):
+            sentences = _HPI_SENTENCE_SPLIT_RE.split(line_str)
+            valid_sentences = [s.strip() for s in sentences if s.strip() and not _HPI_FILTER_RE.search(s)]
             if valid_sentences:
                 cleaned_lines.append(" ".join(valid_sentences))
         else:
@@ -1146,7 +1199,8 @@ The patient has registered at the AYUSH OPD. You MUST provide an authentic, high
                     tier2_str = "=== TIER 2: CURRENTLY UPLOADED MEDICAL DOCUMENTS & LAB REPORTS (IMMEDIATE CORROBORATION) ===\n"
                     for idx, d in enumerate(docs_list, 1):
                         if isinstance(d, dict):
-                            tier2_str += f"- Document #{idx} ({d.get('document_type', 'Report')} - Date: {d.get('document_date', 'Unknown')}): Summary: {d.get('summary', '')}, Diagnoses: {d.get('diagnoses', [])}, Meds: {d.get('medications', [])}, Flagged Labs: {d.get('flagged_values', [])}\n"
+                            mod_tag = d.get('modality', 'document').upper()
+                            tier2_str += f"- Document #{idx} [{mod_tag}] ({d.get('document_type', 'Report')} - Date: {d.get('document_date', 'Unknown')}): Summary: {d.get('summary', '')}, Diagnoses/Findings: {d.get('diagnoses', [])}, Meds: {d.get('medications', [])}, Flagged Abnormalities: {d.get('flagged_values', [])}\n"
             except Exception as e:
                 print(f"Error parsing docs for synthesis: {e}")
 
@@ -1338,7 +1392,10 @@ async def process_audio(
     # 1. Whisper STT (In-Memory Streaming — Zero Disk I/O)
     audio_stream = io.BytesIO(audio_bytes)
     lang_code = LANGUAGE_CODES.get(language, "en")
-    segments, info = whisper_pipeline.transcribe(
+    wp = get_whisper_pipeline()
+    if not wp:
+        raise HTTPException(status_code=503, detail="Whisper speech recognition model unavailable")
+    segments, info = wp.transcribe(
         audio_stream, 
         language=lang_code, 
         beam_size=1,
@@ -1449,10 +1506,12 @@ def handle_followup_extraction(
     is_complete = True if follow_up_count >= 5 else False
     next_question = get_phase_question(language, follow_up_count, category=symptom_cat) if follow_up_count < 5 else "Thank you. Let us proceed to document scanning."
 
-    # When the 5-question interview finishes, trigger full AI synthesis & ABHA filter in background
-    if is_complete and background_tasks is not None:
-        print(f"🚀 Patient intake complete! Dispatching holistic AI synthesis & ABHA history filter for {patient.patient_id}...")
-        background_tasks.add_task(synthesize_and_filter_patient_background, patient.id, patient.abha_id, language, is_ayush)
+    # When the 5-question interview finishes, deload Whisper to free 2.5GB VRAM, then trigger AI synthesis
+    if is_complete:
+        unload_whisper()
+        if background_tasks is not None:
+            print(f"🚀 Patient intake complete! Dispatching holistic AI synthesis & ABHA history filter for {patient.patient_id}...")
+            background_tasks.add_task(synthesize_and_filter_patient_background, patient.id, patient.abha_id, language, is_ayush)
 
     if db is not None:
         db.commit()
@@ -1515,7 +1574,10 @@ async def follow_up_audio(
     # In-Memory Streaming — Zero Disk I/O
     audio_stream = io.BytesIO(audio_bytes)
     lang_code = LANGUAGE_CODES.get(language, "en")
-    segments, info = whisper_pipeline.transcribe(
+    wp = get_whisper_pipeline()
+    if not wp:
+        raise HTTPException(status_code=503, detail="Whisper speech recognition model unavailable")
+    segments, info = wp.transcribe(
         audio_stream, 
         language=lang_code, 
         beam_size=1,
@@ -1543,6 +1605,450 @@ async def follow_up_audio(
     )
 
 
+def detect_visual_modality(image_bytes: bytes) -> tuple[str, str]:
+    """
+    Ultra-fast, zero-VRAM mathematical pixel-space classifier using PIL and numpy (<15MB RAM, <5ms).
+    Accurately classifies medical documents into 5 clinical imaging domains:
+      1. 'ecg': Periodic millimeter pink/salmon grid lines with continuous 12-lead signal waveforms.
+      2. 'pathology': H&E dye spectrum (high violet/magenta cellular clusters).
+      3. 'endoscopy': Intraluminal mucosal warm tones, scope lighting, circular cavity frames, or dermoscopy.
+      4. 'radiology': Grayscale radiograph with dark background polarity (X-Ray, CT, MRI, Ultrasound).
+      5. 'document': High brightness white/cream paper background with dark text strokes (Prescription, Lab Report).
+    Returns (modality_key, domain_conditioned_prompt).
+    """
+    try:
+        from PIL import Image
+        import numpy as np
+
+        img = Image.open(io.BytesIO(image_bytes)).convert('RGB')
+        # Fast thumbnail resize (<2ms, <1MB RAM)
+        img_thumb = img.resize((150, 150))
+        hsv = np.array(img_thumb.convert('HSV'))
+
+        h = hsv[:, :, 0]  # 0..255 (Hue)
+        s = hsv[:, :, 1]  # 0..255 (Saturation)
+        v = hsv[:, :, 2]  # 0..255 (Value / Brightness)
+
+        mean_s = float(np.mean(s))
+        mean_v = float(np.mean(v))
+        dark_pixel_ratio = float(np.mean(v < 75))
+        bright_pixel_ratio = float(np.mean(v > 180))
+
+        # 1. ECG Pink/Salmon grid: Hue in [225..255] or [0..22], Saturation in [25..180], Brightness > 90
+        ecg_grid_mask = ((h >= 225) | (h <= 22)) & (s >= 25) & (s <= 180) & (v >= 90)
+        ecg_ratio = float(np.mean(ecg_grid_mask))
+
+        # 2. Histopathology H&E violet/purple/magenta stain: Hue in [175..235], Saturation > 30, Brightness > 60
+        pathology_mask = (h >= 175) & (h <= 235) & (s >= 30) & (v >= 60)
+        pathology_ratio = float(np.mean(pathology_mask))
+
+        # 3. Endoscopy / Mucosal / Dermoscopy warm tones: Hue in [0..35] or [240..255], Saturation > 40
+        endoscopy_mask = ((h <= 35) | (h >= 240)) & (s >= 40)
+        endoscopy_ratio = float(np.mean(endoscopy_mask))
+
+        if ecg_ratio > 0.12:
+            modality = "ecg"
+            prompt = (
+                "You are an expert Clinical Cardiologist & ECG Specialist. "
+                "Analyze this 12-Lead Electrocardiogram (ECG / EKG) waveform report. "
+                "Examine rhythm regularity, heart rate, P-wave morphology, PR-interval, QRS complex width, "
+                "and ST-segments across leads (I, II, III, aVR, aVL, aVF, V1-V6). "
+                "Report any ST-segment elevation (STEMI), depression, T-wave inversion, bundle branch block, or arrhythmia, "
+                "and transcribe all visible patient or machine calibration text."
+            )
+        elif pathology_ratio > 0.15:
+            modality = "pathology"
+            prompt = (
+                "You are an expert Histopathologist & Biopsy Specialist. "
+                "Analyze this pathology, cytology, or biopsy microscopic image or report. "
+                "Describe cellular architecture, nuclear pleomorphism, tissue margins, cytoplasmic features, mitotic activity, "
+                "and transcribe the anatomical specimen site, histological grade, or diagnostic conclusion."
+            )
+        elif endoscopy_ratio > 0.25 and mean_s > 35:
+            modality = "endoscopy"
+            prompt = (
+                "You are an expert Endoscopy & Cavity Diagnostic Specialist. "
+                "Analyze this internal cavity image (Endoscopy, Colonoscopy, Laparoscopy, Bronchoscopy, Dermoscopy, or Retinal Fundus). "
+                "Carefully evaluate the mucosal lining, vascular pattern, and check for ulcers, erosions, polyps, bleeding, erythema, or lesions. "
+                "Transcribe any visible procedure annotations, anatomical landmarks, or instrument markings."
+            )
+        elif mean_s < 20 and (mean_v < 170 or dark_pixel_ratio > 0.25):
+            modality = "radiology"
+            prompt = (
+                "You are an expert Radiologist & Diagnostic Imaging Specialist. "
+                "Analyze this radiological scan (X-Ray, CT Scan, MRI, Ultrasound, or Mammogram). "
+                "Identify the exact anatomical region (e.g. Skull/Head, Chest/Lungs, Spine, Knee, Pelvis, Abdomen). "
+                "Carefully evaluate bone cortical continuity for fracture lines, joint spaces, soft tissue swelling, lung opacities, cardiomegaly, or focal lesions, "
+                "and transcribe any printed radiologic annotations, patient labels, or orientation markers (L/R)."
+            )
+        else:
+            modality = "document"
+            prompt = (
+                "You are an expert Medical OCR & Clinical Documentation Specialist. "
+                "Analyze this clinical prescription, doctor consultation note, or laboratory diagnostic report. "
+                "Transcribe the clinic/hospital header, doctor name, patient details, presenting symptoms, "
+                "clinical diagnoses, prescribed medications (with dosages, route, and frequency), advised diagnostic tests, and doctor instructions."
+            )
+
+        return modality, prompt
+    except Exception as e:
+        print(f"Modality detection error: {e}")
+        return "document", (
+            "You are an expert Medical Imaging & Clinical OCR specialist. "
+            "Analyze this medical document or scan. Describe the visual findings, anatomical structures shown, "
+            "and transcribe all visible text, diagnoses, medications, or advised tests."
+        )
+
+
+# ── Wide Physiological Plausibility Bounds ──
+# These are NOT reference ranges. They define the widest possible human-physiological
+# bounds used ONLY for: (a) sanity-checking extracted values, (b) decimal restoration.
+# The actual patient-specific reference range always comes from the report itself.
+PHYSIOLOGICAL_BOUNDS = {
+    # Lung Volumes & Spirometry — widest plausible human range
+    "FEV1/FVC": (20.0, 100.0, "%"),
+    "FEF25-75":  (0.3, 15.0, "L/s"),
+    "FEF25":     (0.3, 15.0, "L/s"),
+    "FEF50":     (0.3, 15.0, "L/s"),
+    "FEF75":     (0.2, 10.0, "L/s"),
+    "FVC":       (0.5, 8.0,  "L"),
+    "FEV1":      (0.3, 7.0,  "L"),
+    "PEF":       (1.0, 16.0, "L/s"),
+    "TLC":       (2.0, 10.0, "L"),
+    "VC":        (0.5, 8.0,  "L"),
+    "IC":        (0.5, 6.0,  "L"),
+    "FRC":       (1.0, 6.0,  "L"),
+    "ERV":       (0.3, 4.0,  "L"),
+    "RV":        (0.3, 4.0,  "L"),
+    "RV/TLC":    (10.0, 60.0, "%"),
+    "DLCO/VA":   (1.0, 10.0, "mL/min/mmHg/L"),
+    "DLCO":      (5.0, 50.0, "mL/min/mmHg"),
+    "VA":        (2.0, 12.0, "L"),
+
+    # Complete Blood Count (CBC)
+    "HEMOGLOBIN": (3.0, 22.0, "g/dL"),
+    "HB":         (3.0, 22.0, "g/dL"),
+    "RBC":        (1.0, 8.0,  "mill/cumm"),
+    "WBC":        (1000, 50000, "/cumm"),
+    "LEUCOCYTE":  (1000, 50000, "/cumm"),
+    "PLATELET":   (10000, 900000, "/cumm"),
+    "PCV":        (15.0, 65.0, "%"),
+    "MCV":        (50.0, 130.0, "fL"),
+    "MCH":        (15.0, 45.0, "pg"),
+    "MCHC":       (25.0, 40.0, "g/dL"),
+
+    # Biochemistry / Renal / Hepatic
+    "CREATININE": (0.1, 15.0, "mg/dL"),
+    "BILIRUBIN":  (0.1, 30.0, "mg/dL"),
+    "SGOT":       (0, 500, "U/L"),
+    "AST":        (0, 500, "U/L"),
+    "SGPT":       (0, 500, "U/L"),
+    "ALT":        (0, 500, "U/L"),
+    "ALKALINE PHOSPHATASE": (10, 500, "U/L"),
+    "ALP":        (10, 500, "U/L"),
+    "GLUCOSE":    (20, 600, "mg/dL"),
+}
+
+
+def _try_restore_decimal(val: float, bounds_low: float, bounds_high: float) -> float:
+    """
+    If `val` is outside physiological bounds, try dividing by 10 or 100
+    to restore a dropped decimal point. Returns the best candidate.
+    """
+    if bounds_low <= val <= bounds_high:
+        return val  # already plausible
+    # Try /10
+    v10 = val / 10.0
+    if bounds_low <= v10 <= bounds_high:
+        return v10
+    # Try /100
+    v100 = val / 100.0
+    if bounds_low <= v100 <= bounds_high:
+        return v100
+    return val  # can't fix, return original
+
+
+def _find_physiological_key(param_name: str) -> Optional[str]:
+    """
+    Match a test parameter name to its PHYSIOLOGICAL_BOUNDS key.
+    Handles names like 'Erythrocytes Count (RBC)', 'Mean Corpuscular Volume (MCV)',
+    'Total RBC', 'HB', etc.
+    """
+    if not param_name:
+        return None
+    # Clean the parameter name: strip parenthetical abbreviations, special chars
+    # e.g. "Erythrocytes Count (RBC)" -> try both "ERYTHROCYTESCOUNT" and "RBC"
+    param_upper = param_name.upper().strip()
+    # Extract abbreviation from parentheses if present, e.g. "(RBC)" -> "RBC"
+    abbrev_match = re.search(r'\(([A-Z0-9/\-]+)\)', param_upper)
+    abbrev = abbrev_match.group(1) if abbrev_match else None
+    # Clean full name for matching (remove all non-alphanumeric)
+    param_clean = re.sub(r'[^A-Z0-9]', '', param_upper)
+    
+    # Try matching abbreviation first (most specific), then full name
+    for k in sorted(PHYSIOLOGICAL_BOUNDS.keys(), key=lambda x: len(x), reverse=True):
+        clean_k = re.sub(r'[^A-Z0-9]', '', k.upper())
+        # Match by abbreviation
+        if abbrev and (clean_k == abbrev or abbrev == clean_k):
+            return k
+        # Match by full cleaned name
+        if clean_k == param_clean or param_clean.startswith(clean_k) or param_clean.endswith(clean_k):
+            return k
+    return None
+
+
+def _validate_and_format_flagged(
+    test_name: str,
+    measured_val: float,
+    unit: str,
+    ref_low: Optional[float],
+    ref_high: Optional[float],
+    original_text: str = ""
+) -> Optional[str]:
+    """
+    Core validation logic that works directly on numeric values.
+    Returns formatted string if abnormal, None if normal (to suppress).
+    """
+    matched_key = _find_physiological_key(test_name)
+
+    if matched_key:
+        bounds_low, bounds_high, bounds_unit = PHYSIOLOGICAL_BOUNDS[matched_key]
+        if not unit:
+            unit = bounds_unit
+
+        # Reject physiologically impossible values (e.g. negative percentages)
+        if measured_val < 0 and bounds_low >= 0:
+            return None  # impossible value, suppress
+
+        # Decimal restoration for MEASURED VALUE
+        measured_val = _try_restore_decimal(measured_val, bounds_low, bounds_high)
+
+        # Decimal restoration for REFERENCE RANGE bounds
+        if ref_low is not None and ref_high is not None:
+            ref_low = _try_restore_decimal(ref_low, bounds_low, bounds_high)
+            ref_high = _try_restore_decimal(ref_high, bounds_low, bounds_high)
+            if ref_low > ref_high:
+                ref_low, ref_high = ref_high, ref_low
+            if abs(ref_high - ref_low) < 0.01:
+                ref_low, ref_high = None, None
+
+    if ref_low is not None and ref_high is not None:
+        if measured_val < ref_low:
+            status = "Low"
+        elif measured_val > ref_high:
+            status = "High"
+        else:
+            # Value is WITHIN normal range — suppress it
+            context = (original_text or "").lower()
+            if any(w in context for w in ['reversib', '+', 'chg', 'post', 'asthma', 'airway']):
+                status = "Reversible Airway Response"
+            else:
+                return None
+
+        # Use a clean short name (abbreviation if available, otherwise original)
+        display_name = test_name
+        unit_str = f" {unit}" if unit else ""
+        return f"{display_name}: {measured_val:.2f}{unit_str} ({status}) [Ref: {ref_low} - {ref_high}{unit_str}]"
+
+    # No valid range — pass through the original text as-is (for non-lab findings like fracture descriptions)
+    return original_text if original_text else None
+
+
+def sanitize_clinical_flagged_value(item_str: str) -> Optional[str]:
+    """
+    String-based fallback validator for legacy stored flagged values.
+    Parses structured text like 'TestName: 5.5 g/dL (High) [Ref: 4.0 - 6.0]'
+    and re-validates mathematically.
+    """
+    if not isinstance(item_str, str):
+        return None
+
+    # Clean double dots e.g. 1.2.4 -> 1.24
+    item_str = re.sub(r'(\d+)\.(\d+)\.(\d+)', r'\1.\2\3', item_str)
+
+    # Updated regex: allows parentheses in test names, negative values, complex units
+    m = re.search(
+        r'^\s*([A-Za-z0-9\-/%\s\(\)]+?):\s*(-?[\d\.]+)\s*([A-Za-z0-9/%\s]*?)?'
+        r'(?:\s*\([^\)]*\))?\s*'
+        r'(?:\[(?:Ref:)?\s*(-?[\d\.]+)?\s*[-\u2013~]?\s*(-?[\d\.]+)?\s*(?:[A-Za-z/%\s]*)?\])?$',
+        item_str
+    )
+    if not m:
+        return item_str  # Non-lab findings (fracture descriptions etc.) pass through
+
+    param = m.group(1).strip()
+
+    try:
+        val = float(m.group(2))
+    except (ValueError, TypeError):
+        return item_str
+
+    unit = (m.group(3) or "").strip()
+
+    low, high = None, None
+    if m.group(4) and m.group(5):
+        try:
+            low = float(m.group(4))
+            high = float(m.group(5))
+            if low > high:
+                low, high = high, low
+        except ValueError:
+            pass
+
+    return _validate_and_format_flagged(param, val, unit, low, high, item_str)
+
+
+def normalize_extracted_flagged_values(raw_list) -> List[str]:
+    """
+    Universally normalizes flagged values into clean medical observation strings.
+    Uses DIRECT numeric validation on structured dict objects (bypasses fragile regex).
+    Falls back to string-based regex parsing for legacy string data.
+    """
+    if not isinstance(raw_list, list):
+        return []
+    res = []
+    for item in raw_list:
+        verified = None
+
+        if isinstance(item, dict):
+            # ── DIRECT NUMERIC VALIDATION (no string serialization) ──
+            test = str(item.get("test_name") or item.get("test") or item.get("parameter") or item.get("name") or item.get("description") or "")
+            unit = str(item.get("units") or item.get("unit") or "")
+
+            # Extract measured value
+            raw_val = item.get("measured_value") or item.get("observed_value") or item.get("value")
+            try:
+                measured_val = float(raw_val) if raw_val is not None else None
+            except (ValueError, TypeError):
+                measured_val = None
+
+            # Extract reference range (structured fields preferred)
+            ref_low, ref_high = None, None
+            raw_ref_low = item.get("reference_low")
+            raw_ref_high = item.get("reference_high")
+            if raw_ref_low is not None and raw_ref_high is not None:
+                try:
+                    ref_low = float(raw_ref_low)
+                    ref_high = float(raw_ref_high)
+                except (ValueError, TypeError):
+                    pass
+            # Fallback to string-based range
+            if ref_low is None or ref_high is None:
+                range_str = str(item.get("reference_range") or item.get("normal_range") or item.get("reference_interval") or "")
+                rm = re.search(r'(-?[\d\.]+)\s*[-\u2013~]\s*(-?[\d\.]+)', range_str)
+                if rm:
+                    try:
+                        ref_low = float(rm.group(1))
+                        ref_high = float(rm.group(2))
+                    except ValueError:
+                        pass
+
+            if test and measured_val is not None:
+                verified = _validate_and_format_flagged(test, measured_val, unit, ref_low, ref_high)
+            else:
+                # Unstructured dict — format as string and use legacy validator
+                desc = str(item.get("description") or item.get("finding") or item)
+                verified = desc if desc else None
+
+        elif isinstance(item, str):
+            # ── STRING FALLBACK (legacy stored data) ──
+            verified = sanitize_clinical_flagged_value(item)
+
+        if verified:
+            res.append(verified)
+    return res
+
+
+def enforce_clinical_safety_guardrail(data: dict, raw_text: str) -> dict:
+    """
+    Deterministic clinical safety guardrail to eliminate AI hallucinations
+    from garbled OCR on handwritten prescriptions or consultation slips.
+    """
+    if not isinstance(data, dict):
+        return data
+
+    raw_lower = (raw_text or "").lower()
+    doc_type = str(data.get("document_type", "")).lower()
+    
+    # Check if document is a doctor prescription / consultation slip
+    rx_indicators = ["dr.", "clinic", "rx", "hospital", "prescription", "consultant", "timing:", "patient name", "for medicine", "consulting physician", "mbbs", "md", "reg. no"]
+    lab_indicators = ["reference range", "normal range", "lipid profile", "complete blood count", "cbc report", "spirometry", "pulmonary function", "liver function", "renal function", "kft", "lft", "urine routine"]
+    
+    has_rx_sign = any(k in raw_lower for k in rx_indicators) or "prescription" in doc_type or "clinic" in doc_type
+    has_lab_sign = any(k in raw_lower for k in lab_indicators)
+
+    is_prescription = has_rx_sign and not has_lab_sign
+
+    if is_prescription:
+        data["document_type"] = "Prescription / Doctor Consultation Slip"
+        data["modality"] = "document"
+
+        # Rule 1: Prescriptions NEVER have numerical lab flagged values (e.g. FEV1, Hemoglobin, Creatinine)
+        data["flagged_values"] = []
+
+        # Rule 2: Anti-Hallucination filter for severe medical diagnoses
+        # Do not allow the model to invent Tuberculosis, Cancer, Fracture, Asthma from garbled OCR noise
+        high_stakes_conditions = ["tuberculosis", "cancer", "carcinoma", "fracture", "fev1", "asthma", "heart failure"]
+        cleaned_diagnoses = []
+        for d in data.get("diagnoses", []):
+            if isinstance(d, dict):
+                d_str = str(d.get("name") or d.get("diagnosis") or d.get("symptom") or d.get("complaint", "")).strip()
+            else:
+                d_str = str(d).strip()
+            d_lower = d_str.lower()
+            hallucinated = False
+            for cond in high_stakes_conditions:
+                if cond in d_lower and cond not in raw_lower:
+                    hallucinated = True
+                    break
+            if not hallucinated and d_str:
+                cleaned_diagnoses.append(d_str)
+
+        if not cleaned_diagnoses:
+            cleaned_diagnoses = ["Clinical consultation recorded (Symptoms/Rx noted)"]
+        data["diagnoses"] = cleaned_diagnoses
+
+        # Normalize medications (flatten dicts if model returned structured objects)
+        cleaned_meds = []
+        for m in data.get("medications", []):
+            if isinstance(m, dict):
+                parts = [
+                    str(m.get("name", "")).strip(),
+                    str(m.get("strength") or m.get("dose", "")).strip(),
+                    str(m.get("frequency", "")).strip(),
+                    str(m.get("duration", "")).strip(),
+                    str(m.get("instructions", "")).strip()
+                ]
+                med_str = " ".join(p for p in parts if p).strip()
+                if med_str:
+                    cleaned_meds.append(med_str)
+            elif isinstance(m, str) and m.strip():
+                cleaned_meds.append(m.strip())
+        data["medications"] = cleaned_meds
+
+        # Rule 3: Clinical safety pharmacy advisory on medications and summary
+        safety_notice = "⚠️ Clinical Safety Notice: Cursive doctor handwriting requires pharmacist verification before dispensing medications."
+        existing_summary = str(data.get("summary", "")).strip()
+
+        # Clean generic prompt instruction echos
+        if not existing_summary or any(k in existing_summary.lower() for k in ["full clinical summary", "concise summary", "brief summary", "output only"]):
+            diag_str = ", ".join(cleaned_diagnoses) if cleaned_diagnoses else "Not specified"
+            med_str = ", ".join(cleaned_meds) if cleaned_meds else "None noted"
+            existing_summary = f"Prescription / Doctor Consultation Slip. Symptoms/Complaints: {diag_str}. Prescribed: {med_str}."
+
+        # Remove any hallucinated mentions of high-stakes conditions from the summary if not in raw text
+        for cond in high_stakes_conditions:
+            if cond in existing_summary.lower() and cond not in raw_lower:
+                existing_summary = re.sub(rf"(?i)\b{cond}\b[^.]*\.?", "", existing_summary).strip()
+
+        if "pharmacist" not in existing_summary.lower():
+            data["summary"] = f"{existing_summary} | {safety_notice}" if existing_summary else safety_notice
+        else:
+            data["summary"] = existing_summary
+
+    return data
+
+
 def process_document_background(file_bytes: bytes, filename: str, content_type: str, file_url: str, patient_id_db: int):
     db = SessionLocal()
     try:
@@ -1552,15 +2058,26 @@ def process_document_background(file_bytes: bytes, filename: str, content_type: 
             
         structured_data = None
         extracted_text = ""
+        detected_modality = "document"
         try:
             prompt_base = """Analyze this medical document carefully.
 
 Extract into JSON:
-- document_type: Name or type of report (e.g. CBC, MRI, Prescription)
-- diagnoses: list of clinical diagnoses (English)
-- medications: list of medicines with dosages (English)
-- flagged_values: list of abnormal lab values or critical findings
-- document_date: date on document, or 'Unknown'
+- document_type: Name or type of report (e.g. Chest X-Ray, 12-Lead ECG, Knee Radiograph, Biopsy, CBC, Prescription, PFT Report)
+- modality: Detected imaging modality (exactly one of: 'radiology', 'ecg', 'pathology', 'endoscopy', 'document')
+- diagnoses: list of clinical diagnoses or radiological/pathological findings (English)
+- medications: list of medicines with dosages (English, or empty list if imaging/scan)
+- flagged_values: For each abnormal lab parameter, return a JSON OBJECT with:
+    * "test_name": parameter name exactly as printed on the report
+    * "measured_value": the patient's actual measured numeric value (number, not string)
+    * "unit": the unit of measurement exactly as printed
+    * "reference_low": the LOWER bound of the reference/normal range printed on the report (number)
+    * "reference_high": the UPPER bound of the reference/normal range printed on the report (number)
+    * "status": "Low" if measured < reference_low, "High" if measured > reference_high
+  CRITICAL: Read the reference range EXACTLY from the report's Normal Range / Reference column.
+  Do NOT confuse predicted values, percent-predicted, or percent-change columns with reference ranges.
+  For imaging/non-lab documents, use string descriptions for flagged findings.
+- document_date: date on document or 'Visual Scan'
 - summary: concise summary of key findings
 
 Output ONLY valid JSON:
@@ -1571,17 +2088,172 @@ Output ONLY valid JSON:
                 pdf_doc = fitz.open(stream=file_bytes, filetype="pdf")
                 for page in pdf_doc:
                     extracted_text += page.get_text() + "\n"
-                prompt = f"Extracted Text:\n{extracted_text}\n\n{prompt_base}"
-                response_text = call_llm(prompt)
-            else:
-                print(f"Using {VISION_MODEL} for image in background...")
-                response_text = call_llm(prompt_base, image_bytes=file_bytes)
+                detected_modality = "document"
 
-            result_json = json.loads(extract_json_string(response_text))
+                raw_check = extracted_text.lower()
+                is_presc = any(k in raw_check for k in ["dr.", "clinic", "rx", "hospital", "prescription", "consultant", "timing:"]) and not any(k in raw_check for k in ["reference range", "normal range", "lipid profile", "cbc", "spirometry", "pulmonary function", "kft", "lft"])
+
+                if is_presc:
+                    prompt = f"""You are an expert Chief Medical Officer and Clinical Pharmacologist.
+Analyze this doctor prescription / clinical consultation text and extract structured findings into JSON.
+Target Modality: document
+
+CLINICAL SAFETY GUARDRAILS:
+1. Set document_type: "Prescription / Doctor Consultation Slip"
+2. ABSOLUTELY NO LAB PARAMETERS: Prescriptions do not contain lab ranges. Set flagged_values: [] (empty list). NEVER output FEV1, Hemoglobin, or lab numbers!
+3. ANTI-HALLUCINATION: NEVER guess or invent major diagnoses (like Tuberculosis, Cancer, Fracture, Asthma). Extract only clearly stated symptoms (e.g. cold, fever, pain).
+4. MEDICATIONS: Extract clearly stated medicines and dosages.
+5. SUMMARY: Provide concise clinic, doctor, patient vitals, and prescribed medications summary.
+
+Document Content:
+{extracted_text}
+
+Output ONLY valid JSON:
+{DOCUMENT_JSON_TEMPLATE}"""
+                else:
+                    prompt = f"""You are an expert Chief Medical Officer and Clinical Data Structurer.
+Analyze this clinical document / laboratory report text and extract structured clinical findings into JSON.
+Target Modality: document
+
+UNIVERSAL CLINICAL DECISION SUPPORT RULES:
+1. DATA EXTRACTION:
+   - Extract EVERY test parameter found in the document into 'flagged_values'.
+   - Do NOT filter for abnormals yourself. Extract ALL test parameters, both normal and abnormal.
+   - In 'flagged_values', return a JSON OBJECT for EACH parameter with fields:
+     test_name, measured_value (number), unit, reference_low (number), reference_high (number), status (string).
+   - CRITICAL: Extract the reference range EXACTLY from the document's Normal Range or Reference column.
+     Do NOT confuse Predicted values, %Predicted, or %Change with the reference/normal range.
+   - CRITICAL SAFETY: NEVER state "results are within normal limits" if abnormal values or active diagnoses exist!
+
+2. CLINICAL DIAGNOSES:
+   - Extract all stated diagnoses, pathological impressions, or clinical syndromes.
+
+3. MEDICATIONS & DOSAGES:
+   - Extract all prescribed medications, inhalers, dosages, route, and frequency.
+
+4. PHYSIOLOGICAL SCALE & DECIMAL RESTORATION:
+   - Restore dropped 1-pixel decimal points to human physiological bounds.
+
+Extracted Document Text:
+{extracted_text}
+
+{prompt_base}"""
+                response_text = call_llm(prompt, model=DOC_EXTRACTION_MODEL)
+            else:
+                # 1. Zero-VRAM mathematical pixel classifier (<5ms, CPU memory)
+                detected_modality, domain_prompt = detect_visual_modality(file_bytes)
+                print(f"📸 Detected Visual Modality: {detected_modality.upper()} | Processing with Qwen 2.5-VL (3B)...")
+
+                # 2. High-Precision OCR Engine with Optical Pre-Processing for Blurry Photos
+                ocr_text = ""
+                try:
+                    import pytesseract
+                    from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+                    raw_img = Image.open(io.BytesIO(file_bytes)).convert('L')
+                    # Autocontrast normalization to eliminate smartphone shadows and lighting gradients
+                    norm_img = ImageOps.autocontrast(raw_img, cutoff=2)
+                    w, h = norm_img.size
+                    # Adaptive Lanczos super-sampling upscaling
+                    scale = 1.0
+                    if w < 1500 or h < 1500:
+                        scale = max(1.5, min(3.0, 1800 / max(w, h)))
+                        norm_img = norm_img.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
+                    # Unsharp masking to crispen blurred character strokes and 1-pixel decimal points
+                    sharpened_img = norm_img.filter(ImageFilter.UnsharpMask(radius=1.8, percent=150, threshold=2))
+                    enhancer = ImageEnhance.Contrast(sharpened_img)
+                    ocr_img_enhanced = enhancer.enhance(1.5)
+                    ocr_text = pytesseract.image_to_string(ocr_img_enhanced).strip()
+                    if ocr_text:
+                        print(f"✅ Extracted High-Fidelity OCR text ({len(ocr_text)} chars)")
+                except Exception as ocr_err:
+                    print(f"OCR Extraction note: {ocr_err}")
+
+                # 3. Direct High-Resolution Vision Extraction via Qwen 2.5-VL (3B)
+                # Reads doctor cursive handwriting, lab tables, and imaging directly
+                raw_check = ocr_text.lower()
+                is_presc = any(k in raw_check for k in ["dr.", "clinic", "rx", "hospital", "prescription", "consultant", "timing:"]) and not any(k in raw_check for k in ["reference range", "normal range", "lipid profile", "cbc", "spirometry", "pulmonary function", "kft", "lft"])
+
+                if is_presc or detected_modality == "document":
+                    vl_prompt = f"""You are an expert Chief Medical Officer and Clinical Diagnostic Specialist.
+Analyze this medical document or doctor prescription image carefully.
+Extract the clinical findings and output ONLY valid JSON matching this exact JSON schema:
+
+```json
+{DOCUMENT_JSON_TEMPLATE}
+```
+
+UNIVERSAL CLINICAL RULES:
+1. For doctor prescriptions / consultation slips:
+   - Set document_type: "Prescription / Doctor Consultation Slip"
+   - Extract chief complaints and recorded symptoms into 'diagnoses'.
+   - Extract every prescribed medicine with strength/dosage and frequency into 'medications'.
+   - ABSOLUTELY NO LAB PARAMETERS: Set 'flagged_values': [] (empty list). Never hallucinate FEV1 or lab values for a prescription!
+   - Anti-hallucination: Never invent major diseases (like Tuberculosis, Cancer, COPD, Asthma).
+2. For laboratory reports (CBC, PFT, LFT, KFT, Lipid Profile):
+   - Extract every test parameter into 'flagged_values' as objects: {{"test_name": ..., "measured_value": number, "unit": ..., "reference_low": number, "reference_high": number, "status": "Low"/"High"/"Normal"}}
+   - Read the reference range EXACTLY from the report's reference column.
+3. For medical imaging (X-rays, ECGs, Endoscopy):
+   - Set modality to radiology/ecg/endoscopy and summarize anatomical/rhythm findings.
+4. Output ONLY valid JSON."""
+                else:
+                    vl_prompt = f"""You are an expert Radiologist, Cardiologist, and Clinical Diagnostic Specialist.
+Analyze this medical scan ({detected_modality.upper()}) carefully.
+Extract findings and output ONLY valid JSON matching this exact JSON schema:
+
+```json
+{DOCUMENT_JSON_TEMPLATE}
+```
+
+Modality: {detected_modality}
+Analyze:
+- Anatomy, radiological densities, fractures, consolidations, cardiomegaly (for radiology)
+- Rhythm, intervals, ST-T segment, axis, rate (for ECG)
+- Pathological / endoscopic visual impressions
+Output ONLY valid JSON."""
+
+                try:
+                    print(f"🔬 Invoking Qwen 2.5-VL (3B) Multimodal Vision (Modality: {detected_modality})...")
+                    response_text = run_qwen_vl_inference(file_bytes, vl_prompt, max_new_tokens=512)
+                    extracted_text = f"{response_text}\n\n=== OCR Reference Text ===\n{ocr_text}"
+                except Exception as vl_err:
+                    print(f"⚠️ Qwen 2.5-VL failed ({vl_err}), falling back to text LLM...")
+                    combined_observations = f"""=== HIGH-PRECISION TEXT & NUMERICAL TABLE OCR ===
+{ocr_text if ocr_text else "(No printed text identified by OCR engine)"}"""
+                    extracted_text = combined_observations
+                    response_text = call_llm(
+                        f"""Analyze this medical document text and output ONLY valid JSON matching:
+{DOCUMENT_JSON_TEMPLATE}
+
+Document Content:
+{combined_observations}""",
+                        model=DOC_EXTRACTION_MODEL
+                    )
+
+            clean_json_str = extract_json_string(response_text)
+            try:
+                result_json = json.loads(clean_json_str)
+            except Exception as json_err:
+                print(f"JSON parse fallback ({json_err}), repairing via {DOC_EXTRACTION_MODEL}...")
+                repaired = call_llm(f"""Convert this extraction into valid JSON matching:
+{DOCUMENT_JSON_TEMPLATE}
+
+Content:
+{response_text}""", model=DOC_EXTRACTION_MODEL)
+                result_json = json.loads(extract_json_string(repaired))
+
             result_json = unwrap_json(result_json)
+            # Normalize flagged values safely whether strings or dicts
+            if "flagged_values" in result_json:
+                result_json["flagged_values"] = normalize_extracted_flagged_values(result_json["flagged_values"])
+            
+            # Apply deterministic clinical safety guardrail
+            result_json = enforce_clinical_safety_guardrail(result_json, extracted_text)
+
             extraction = DocumentExtraction(**result_json)
+            final_modality = extraction.modality if extraction.modality in ["radiology", "ecg", "pathology", "endoscopy", "document"] else detected_modality
             structured_data = {
                 "document_type": extraction.document_type,
+                "modality": final_modality,
                 "diagnoses": extraction.diagnoses,
                 "medications": extraction.medications,
                 "flagged_values": extraction.flagged_values,
@@ -1590,18 +2262,19 @@ Output ONLY valid JSON:
                 "file_url": file_url,
                 "raw_text": extracted_text
             }
-            print(f"Background Extracted: {structured_data}")
+            print(f"Background Extracted [{final_modality}]: {structured_data['document_type']} - {structured_data['summary'][:80]}")
         except Exception as e:
             print(f"Background Document processing failed: {e}")
 
         if not structured_data:
             structured_data = {
-                "document_type": "Unknown Document",
+                "document_type": "Medical Scan / Document" if detected_modality != "document" else "Unknown Document",
+                "modality": detected_modality,
                 "diagnoses": ["Extraction failed — please try again"],
                 "medications": [],
                 "flagged_values": [],
-                "document_date": "Unknown",
-                "summary": "Could not process this document. Please try a clearer image.",
+                "document_date": "Visual Scan",
+                "summary": "Could not fully process this visual document. Please try a clearer scan.",
                 "file_url": file_url,
                 "raw_text": extracted_text
             }
@@ -1690,6 +2363,10 @@ async def finalize_intake(
     patient = db.query(PatientRecord).filter(PatientRecord.patient_id == patient_id).first()
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
+    
+    # Skip redundant synthesis if follow-up completion already triggered it (saves ~15-25s GPU time)
+    if patient.is_synthesized:
+        return {"status": "success", "message": "Synthesis already complete — skipping redundant call"}
     
     background_tasks.add_task(synthesize_and_filter_patient_background, patient.id, patient.abha_id, language, is_ayush)
     return {"status": "success", "message": "Comprehensive synthesis (dialogue + documents) queued"}
@@ -1848,6 +2525,22 @@ async def get_patient_summary(patient_id: Optional[str] = None, db: Session = De
         except Exception:
             impression = {}
 
+    sanitized_flagged_lab_values = patient.flagged_lab_values or "[]"
+    try:
+        parsed_docs = json.loads(sanitized_flagged_lab_values)
+        if isinstance(parsed_docs, list):
+            for doc in parsed_docs:
+                if isinstance(doc, dict) and "flagged_values" in doc and isinstance(doc["flagged_values"], list):
+                    cleaned_items = []
+                    for v in doc["flagged_values"]:
+                        v_clean = sanitize_clinical_flagged_value(v)
+                        if v_clean:
+                            cleaned_items.append(v_clean)
+                    doc["flagged_values"] = cleaned_items
+            sanitized_flagged_lab_values = json.dumps(parsed_docs)
+    except Exception:
+        pass
+
     return {
         "patient_id": patient.patient_id,
         "patient_name": patient.patient_name or "Patient",
@@ -1870,7 +2563,7 @@ async def get_patient_summary(patient_id: Optional[str] = None, db: Session = De
         "prakriti": patient.prakriti or "Not assessed",
         "vikriti": patient.vikriti or "Not assessed",
         "agni": patient.agni or "Not assessed",
-        "flagged_lab_values": patient.flagged_lab_values or "[]",
+        "flagged_lab_values": sanitized_flagged_lab_values,
         "is_synthesized": bool(patient.is_synthesized),
         "created_at": patient.created_at,
     }
@@ -1945,6 +2638,7 @@ async def demo_data(background_tasks: BackgroundTasks, abha_id: Optional[str] = 
     
     demo_doc = {
         "document_type": "Lipid Profile & ECG Report",
+        "modality": "ecg",
         "diagnoses": ["Hyperlipidemia", "CAD Status Post-PCI"],
         "medications": ["Atorvastatin 40mg OD", "Aspirin 75mg OD"],
         "flagged_values": ["LDL Cholesterol: 145 mg/dL (High)", "Total Cholesterol: 230 mg/dL (High)"],
