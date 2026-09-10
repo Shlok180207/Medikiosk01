@@ -21,6 +21,22 @@ export default function Summary() {
       const response = await fetch(`${API_BASE_URL}/patient-summary?patient_id=${patientId}`);
       const data = await response.json();
       setSummary(data);
+      if (data && !data.is_synthesized) {
+        let attempts = 0;
+        const timer = setInterval(async () => {
+          attempts++;
+          try {
+            const pollRes = await fetch(`${API_BASE_URL}/patient-summary?patient_id=${patientId}`);
+            const pollData = await pollRes.json();
+            if ((pollData && pollData.is_synthesized) || attempts >= 10) {
+              setSummary(pollData);
+              clearInterval(timer);
+            }
+          } catch (e) {
+            clearInterval(timer);
+          }
+        }, 2500);
+      }
     } catch (error) {
       console.error('Failed to fetch summary:', error);
     } finally {

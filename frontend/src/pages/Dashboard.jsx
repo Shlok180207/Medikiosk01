@@ -44,6 +44,7 @@ const getLikelihoodStyle = (likelihood) => {
 
 const oneLiner = (text) => {
   if (!text || text === 'None reported' || text === 'Not recorded') return null;
+  if (text === 'Awaiting synthesis') return '⏳ Awaiting synthesis...';
   const clean = text.replace(/\n+/g, ' ').trim();
   return clean.length > 120 ? clean.slice(0, 117) + '…' : clean;
 };
@@ -58,6 +59,7 @@ export default function Dashboard() {
   const [status, setStatus] = useState('Waiting for patient...');
   const [historyData, setHistoryData] = useState(null);
   const [showAllHistory, setShowAllHistory] = useState(false);
+  const [isSynthesizing, setIsSynthesizing] = useState(false);
 
   /* ─── Data Fetching (unchanged) ─────────────────────────────────── */
   const fetchQueue = async () => {
@@ -81,6 +83,39 @@ export default function Dashboard() {
       setPatientData(data);
       setStatus('Synchronized');
     } catch (error) { console.error('Failed to fetch data', error); setStatus('Error connecting'); }
+  };
+
+  const handleResynthesize = async () => {
+    if (!selectedPatientId) return;
+    try {
+      setIsSynthesizing(true);
+      setStatus('Synthesizing...');
+      await fetch(`${API_BASE_URL}/resynthesize?patient_id=${selectedPatientId}`, { method: 'POST' });
+      let attempts = 0;
+      const poll = setInterval(async () => {
+        attempts++;
+        try {
+          const res = await fetch(`${API_BASE_URL}/patient-summary?patient_id=${selectedPatientId}`);
+          const data = await res.json();
+          if (data.is_synthesized || attempts >= 8) {
+            setPatientData(data);
+            fetchHistory();
+            setIsSynthesizing(false);
+            setStatus('Synchronized');
+            clearInterval(poll);
+          }
+        } catch (e) {
+          if (attempts >= 8) {
+            setIsSynthesizing(false);
+            clearInterval(poll);
+          }
+        }
+      }, 2000);
+    } catch (error) {
+      console.error('Failed to trigger resynthesis:', error);
+      setIsSynthesizing(false);
+      setStatus('Synthesis error');
+    }
   };
 
   const handleDelete = async (e, id) => {
@@ -201,6 +236,56 @@ export default function Dashboard() {
         ) : (
           <div className="animate-fade-in">
 
+            {/* Pending Synthesis Alert Banner */}
+            {!patientData.is_synthesized && (
+              <div style={{
+                background: '#fffbeb',
+                border: '1px solid #fde68a',
+                borderLeft: '4px solid #f59e0b',
+                borderRadius: '8px',
+                padding: '12px 18px',
+                marginBottom: '14px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                flexWrap: 'wrap',
+                gap: '10px',
+                boxShadow: '0 1px 3px rgba(245,158,11,0.1)'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <span style={{ fontSize: '20px' }}>⚡</span>
+                  <div>
+                    <strong style={{ fontSize: '13px', color: '#92400e', display: 'block' }}>
+                      Clinical Synthesis Pending
+                    </strong>
+                    <span style={{ fontSize: '12px', color: '#b45309' }}>
+                      Differential diagnoses, CDSS evidence, and organized organ-system reviews are awaiting generation.
+                    </span>
+                  </div>
+                </div>
+                <button
+                  onClick={handleResynthesize}
+                  disabled={isSynthesizing}
+                  style={{
+                    background: '#d97706',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: '6px',
+                    padding: '6px 14px',
+                    fontSize: '12px',
+                    fontWeight: 700,
+                    cursor: isSynthesizing ? 'wait' : 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
+                  }}
+                >
+                  {isSynthesizing ? '⏳ Processing AI Synthesis...' : '⚡ Generate Summary Now'}
+                </button>
+              </div>
+            )}
+
             {/* ═══════════════════════════════════════════════════════
                  HERO STRIP — The 5-Second Briefing
                 ═══════════════════════════════════════════════════════ */}
@@ -283,6 +368,27 @@ export default function Dashboard() {
                       display: 'flex', alignItems: 'center', gap: '4px'
                     }}
                   >🔄 Refresh</button>
+                  <button
+                    onClick={handleResynthesize}
+                    disabled={isSynthesizing}
+                    style={{
+                      background: patientData.is_synthesized ? '#ffffff' : '#1d4ed8',
+                      border: patientData.is_synthesized ? '1px solid #cbd5e1' : '1px solid #1d4ed8',
+                      color: patientData.is_synthesized ? '#334155' : '#ffffff',
+                      borderRadius: '6px',
+                      padding: '4px 10px',
+                      fontSize: '11px',
+                      fontWeight: 700,
+                      cursor: isSynthesizing ? 'wait' : 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      boxShadow: patientData.is_synthesized ? 'none' : '0 1px 3px rgba(29,78,216,0.3)'
+                    }}
+                    title="Generate or update AI clinical synthesis"
+                  >
+                    {isSynthesizing ? '⏳ Synthesizing...' : (patientData.is_synthesized ? '⚡ Re-synthesize' : '⚡ Generate AI Synthesis')}
+                  </button>
                 </div>
               </div>
 

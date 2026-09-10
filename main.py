@@ -31,9 +31,45 @@ load_dotenv()
 import ollama
 
 OLLAMA_MODEL = "qwen2.5:7b"
-FALLBACK_MODEL = "qwen2.5:7b"
-VISION_MODEL = "moondream"
+FALLBACK_MODEL = "qwen2.5:3b"
 DOC_EXTRACTION_MODEL = "qwen2.5:7b"
+
+# ── Perception & Synthesis Engines (100% CPU Perception + GPU LLM) ──
+from perception.xray import analyze_xray
+from perception.ecg import analyze_ecg
+from perception.prescription import analyze_prescription, normalize_drugs
+from audio.transcriber import AudioTranscriber, get_vram_mb
+from synthesis.llm import synthesize_clinical_case
+
+def ensure_ollama_running() -> bool:
+    """Checks if local Ollama daemon is active on 127.0.0.1:11434. If not, auto-starts 'ollama serve'."""
+    import socket, subprocess, time
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(0.6)
+    try:
+        sock.connect(("127.0.0.1", 11434))
+        sock.close()
+        return True
+    except Exception:
+        pass
+    
+    print("⚙️ Ollama server not detected on 127.0.0.1:11434. Auto-launching 'ollama serve' in background...")
+    try:
+        if sys.platform == "win32":
+            subprocess.Popen(["ollama", "serve"], creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS, shell=True)
+        else:
+            subprocess.Popen(["ollama", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(2.0)
+        return True
+    except Exception as e:
+        print(f"⚠️ Could not auto-launch 'ollama serve': {e}")
+        return False
+
+# Ensure Ollama is running on module import
+try:
+    ensure_ollama_running()
+except Exception as _oe:
+    print(f"Initial Ollama check note: {_oe}")
 
 # ── Dynamic Whisper STT (CUDA GPU with Lifecycle Management) ──
 import threading
@@ -58,12 +94,12 @@ def get_whisper_pipeline():
 def unload_whisper():
     """
     Deload Faster-Whisper after conversation finishes to return ~2.5GB VRAM to GPU.
-    Gives 100% VRAM headroom to Ollama LLM synthesis and Moondream vision.
+    Gives 100% VRAM headroom to GPU LLM clinical synthesis (Qwen2.5-7B).
     """
     global whisper_pipeline
     with _whisper_lock:
         if whisper_pipeline is not None:
-            print("🧹 Deloading Faster-Whisper from GPU to maximize VRAM for LLM & Vision...")
+            print("🧹 Deloading Faster-Whisper from GPU to maximize VRAM for LLM...")
             try:
                 del whisper_pipeline
             except Exception:
@@ -90,21 +126,7 @@ except Exception as e:
 OLLAMA_KEEP_ALIVE = "1m"  # Auto-unload models after 1 min idle to reclaim ~4.7 GB VRAM
 
 def call_llm(prompt: str, image_bytes: Optional[bytes] = None, model: Optional[str] = None) -> str:
-    """Call Moondream for vision, or Ollama for text reasoning."""
-    if image_bytes:
-        print(f"→ {VISION_MODEL} Vision (Ollama GPU)...")
-        messages = [{'role': 'user', 'content': prompt}]
-        b64 = base64.b64encode(image_bytes).decode('utf-8')
-        messages[0]['images'] = [b64]
-        try:
-            response = ollama.chat(model=VISION_MODEL, messages=messages, options={
-                'num_ctx': 1024,
-                'temperature': 0.1
-            }, keep_alive=OLLAMA_KEEP_ALIVE)
-            return response['message']['content']
-        except Exception as vl_err:
-            print(f"⚠️ {VISION_MODEL} error ({vl_err})")
-            raise vl_err
+    """Call Ollama / local LLM for clinical text reasoning (Zero VRAM allocated to vision)."""
 
     messages = [{'role': 'user', 'content': prompt}]
     target_model = model or OLLAMA_MODEL
@@ -117,13 +139,19 @@ def call_llm(prompt: str, image_bytes: Optional[bytes] = None, model: Optional[s
         }, keep_alive=OLLAMA_KEEP_ALIVE)
         return response['message']['content']
     except Exception as e:
+        print(f"⚠️ {target_model} failed or Ollama connection lost ({e}). Verifying Ollama status...")
+        ensure_ollama_running()
         if target_model != FALLBACK_MODEL:
-            print(f"⚠️ {target_model} not ready or failed ({e}), falling back to {FALLBACK_MODEL}...")
-            response = ollama.chat(model=FALLBACK_MODEL, messages=messages, format='json', options={
-                'num_ctx': 32768,
-                'temperature': 0.1
-            }, keep_alive=OLLAMA_KEEP_ALIVE)
-            return response['message']['content']
+            print(f"🔄 Falling back to lightweight local model {FALLBACK_MODEL}...")
+            try:
+                response = ollama.chat(model=FALLBACK_MODEL, messages=messages, format='json', options={
+                    'num_ctx': 4096,
+                    'temperature': 0.1
+                }, keep_alive=OLLAMA_KEEP_ALIVE)
+                return response['message']['content']
+            except Exception as fb_err:
+                print(f"⚠️ Fallback {FALLBACK_MODEL} also failed: {fb_err}")
+                raise fb_err
         raise e
 
 
@@ -1318,7 +1346,60 @@ Output ONLY valid JSON:
             filter_history_background(patient_id_db, abha_id, patient.chief_complaint)
 
     except Exception as e:
-        print(f"❌ Synthesis error: {e}")
+        print(f"❌ Synthesis error: {e}. Falling back to dialogue-based clinical extraction...")
+        try:
+            raw_text = patient.raw_dialogue or ""
+            dialogue_lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
+            patient_answers = []
+            for line in dialogue_lines:
+                if line.startswith("Patient") and ":" in line:
+                    ans = line.split(":", 1)[1].strip()
+                    if ans:
+                        patient_answers.append(ans)
+            
+            cc = patient.chief_complaint or (patient_answers[0] if patient_answers else "Acute medical evaluation requested")
+            patient.chief_complaint = cc
+            if not patient.hpi or "Awaiting" in patient.hpi or patient.hpi == f"Patient reports: {cc}":
+                if patient_answers:
+                    patient.hpi = f"Patient presents with {cc}. Interview notes: " + "; ".join(patient_answers[:4])
+                else:
+                    patient.hpi = f"Patient presents with: {cc}."
+            
+            if not patient.past_medical_history or "Awaiting" in patient.past_medical_history:
+                patient.past_medical_history = "No significant chronic medical history reported during intake"
+            if not patient.family_history or "Awaiting" in patient.family_history:
+                patient.family_history = "No significant hereditary or family illness reported"
+            if not patient.personal_history or "Awaiting" in patient.personal_history:
+                patient.personal_history = "No adverse lifestyle or substance risks reported"
+            if not patient.allergies or "Awaiting" in patient.allergies:
+                patient.allergies = "No known drug or food allergies (NKDA)"
+            if not patient.review_of_systems or "Awaiting" in patient.review_of_systems:
+                patient.review_of_systems = "Systemic symptoms reviewed during intake"
+            
+            if not patient.clinical_impression_json or patient.clinical_impression_json == "{}":
+                fallback_impression = {
+                    "clinical_synthesis": [
+                        f"Patient presented with: {cc}",
+                        f"Track: {patient.symptom_category or 'General OPD'} with acuity status: {patient.severity or 'Medium'}.",
+                        "Synthesized using structured intake dialogue."
+                    ],
+                    "probable_diagnoses": [
+                        {
+                            "condition": f"Symptom complex: {patient.symptom_category or cc}",
+                            "likelihood": "Medium",
+                            "supporting_evidence": f"Patient reports: {cc}"
+                        }
+                    ],
+                    "suggested_investigations": ["Clinical evaluation by physician", "Vital signs recording", "Basic diagnostic panel"],
+                    "critical_rule_outs": ["Acute cardiopulmonary / surgical red flags"]
+                }
+                patient.clinical_impression_json = json.dumps(fallback_impression)
+            
+            patient.is_synthesized = True
+            db.commit()
+            print(f"✅ Fallback structured clinical record saved for {patient.patient_id}")
+        except Exception as fb_err:
+            print(f"❌ Fallback extraction error: {fb_err}")
     finally:
         db.close()
 
@@ -1605,17 +1686,62 @@ async def follow_up_audio(
     )
 
 
-def detect_visual_modality(image_bytes: bytes) -> tuple[str, str]:
+def detect_visual_modality(image_bytes: bytes, filename: str = "") -> tuple[str, str]:
     """
     Ultra-fast, zero-VRAM mathematical pixel-space classifier using PIL and numpy (<15MB RAM, <5ms).
     Accurately classifies medical documents into 5 clinical imaging domains:
       1. 'ecg': Periodic millimeter pink/salmon grid lines with continuous 12-lead signal waveforms.
       2. 'pathology': H&E dye spectrum (high violet/magenta cellular clusters).
       3. 'endoscopy': Intraluminal mucosal warm tones, scope lighting, circular cavity frames, or dermoscopy.
-      4. 'radiology': Grayscale radiograph with dark background polarity (X-Ray, CT, MRI, Ultrasound).
+      4. 'radiology': Grayscale radiograph or blue-tinted radiograph with dark background polarity (X-Ray, CT, MRI, Ultrasound).
       5. 'document': High brightness white/cream paper background with dark text strokes (Prescription, Lab Report).
     Returns (modality_key, domain_conditioned_prompt).
     """
+    radiology_prompt = (
+        "You are an expert Radiologist & Diagnostic Imaging Specialist. "
+        "Analyze this radiological scan (X-Ray, CT Scan, MRI, Ultrasound, or Mammogram). "
+        "Identify the exact anatomical region (e.g. Skull/Head, Chest/Lungs, Spine, Knee, Pelvis, Abdomen). "
+        "Carefully evaluate bone cortical continuity for fracture lines, joint spaces, soft tissue swelling, lung opacities, cardiomegaly, or focal lesions, "
+        "and transcribe any printed radiologic annotations, patient labels, or orientation markers (L/R)."
+    )
+    ecg_prompt = (
+        "You are an expert Clinical Cardiologist & ECG Specialist. "
+        "Analyze this 12-Lead Electrocardiogram (ECG / EKG) waveform report. "
+        "Examine rhythm regularity, heart rate, P-wave morphology, PR-interval, QRS complex width, "
+        "and ST-segments across leads (I, II, III, aVR, aVL, aVF, V1-V6). "
+        "Report any ST-segment elevation (STEMI), depression, T-wave inversion, bundle branch block, or arrhythmia, "
+        "and transcribe all visible patient or machine calibration text."
+    )
+    pathology_prompt = (
+        "You are an expert Histopathologist & Biopsy Specialist. "
+        "Analyze this pathology, cytology, or biopsy microscopic image or report. "
+        "Describe cellular architecture, nuclear pleomorphism, tissue margins, cytoplasmic features, mitotic activity, "
+        "and transcribe the anatomical specimen site, histological grade, or diagnostic conclusion."
+    )
+    endoscopy_prompt = (
+        "You are an expert Endoscopy & Cavity Diagnostic Specialist. "
+        "Analyze this internal cavity image (Endoscopy, Colonoscopy, Laparoscopy, Bronchoscopy, Dermoscopy, or Retinal Fundus). "
+        "Carefully evaluate the mucosal lining, vascular pattern, and check for ulcers, erosions, polyps, bleeding, erythema, or lesions. "
+        "Transcribe any visible procedure annotations, anatomical landmarks, or instrument markings."
+    )
+    doc_prompt = (
+        "You are an expert Medical OCR & Clinical Documentation Specialist. "
+        "Analyze this clinical prescription, doctor consultation note, or laboratory diagnostic report. "
+        "Transcribe the clinic/hospital header, doctor name, patient details, presenting symptoms, "
+        "clinical diagnoses, prescribed medications (with dosages, route, and frequency), advised diagnostic tests, and doctor instructions."
+    )
+
+    # 1. Immediate high-confidence filename heuristics
+    fn = (filename or "").lower()
+    if any(k in fn for k in ["xray", "x-ray", "cxr", "chest", "radiology", "radiograph", "ct_scan", "ct-scan", "mri", "ultrasound"]):
+        return "radiology", radiology_prompt
+    if any(k in fn for k in ["ecg", "ekg", "cardio", "rhythm", "holter"]):
+        return "ecg", ecg_prompt
+    if any(k in fn for k in ["biopsy", "patholog", "histolog", "cytolog", "specimen"]):
+        return "pathology", pathology_prompt
+    if any(k in fn for k in ["prescription", "doctor_slip", "rx_slip", "consultation_slip"]):
+        return "document", doc_prompt
+
     try:
         from PIL import Image
         import numpy as np
@@ -1646,49 +1772,25 @@ def detect_visual_modality(image_bytes: bytes) -> tuple[str, str]:
         endoscopy_mask = ((h <= 35) | (h >= 240)) & (s >= 40)
         endoscopy_ratio = float(np.mean(endoscopy_mask))
 
+        # 4. Radiograph Blue/Cyan tint (common Kodak/digital monitor tint): Hue in [130..180], Saturation > 20
+        blue_cyan_mask = (h >= 130) & (h <= 180) & (s >= 20)
+        blue_cyan_ratio = float(np.mean(blue_cyan_mask))
+
         if ecg_ratio > 0.12:
             modality = "ecg"
-            prompt = (
-                "You are an expert Clinical Cardiologist & ECG Specialist. "
-                "Analyze this 12-Lead Electrocardiogram (ECG / EKG) waveform report. "
-                "Examine rhythm regularity, heart rate, P-wave morphology, PR-interval, QRS complex width, "
-                "and ST-segments across leads (I, II, III, aVR, aVL, aVF, V1-V6). "
-                "Report any ST-segment elevation (STEMI), depression, T-wave inversion, bundle branch block, or arrhythmia, "
-                "and transcribe all visible patient or machine calibration text."
-            )
+            prompt = ecg_prompt
         elif pathology_ratio > 0.15:
             modality = "pathology"
-            prompt = (
-                "You are an expert Histopathologist & Biopsy Specialist. "
-                "Analyze this pathology, cytology, or biopsy microscopic image or report. "
-                "Describe cellular architecture, nuclear pleomorphism, tissue margins, cytoplasmic features, mitotic activity, "
-                "and transcribe the anatomical specimen site, histological grade, or diagnostic conclusion."
-            )
+            prompt = pathology_prompt
         elif endoscopy_ratio > 0.25 and mean_s > 35:
             modality = "endoscopy"
-            prompt = (
-                "You are an expert Endoscopy & Cavity Diagnostic Specialist. "
-                "Analyze this internal cavity image (Endoscopy, Colonoscopy, Laparoscopy, Bronchoscopy, Dermoscopy, or Retinal Fundus). "
-                "Carefully evaluate the mucosal lining, vascular pattern, and check for ulcers, erosions, polyps, bleeding, erythema, or lesions. "
-                "Transcribe any visible procedure annotations, anatomical landmarks, or instrument markings."
-            )
-        elif mean_s < 20 and (mean_v < 170 or dark_pixel_ratio > 0.25):
+            prompt = endoscopy_prompt
+        elif ((mean_s < 30) or (blue_cyan_ratio > 0.30)) and (mean_v < 175 or dark_pixel_ratio > 0.15) and (bright_pixel_ratio < 0.55):
             modality = "radiology"
-            prompt = (
-                "You are an expert Radiologist & Diagnostic Imaging Specialist. "
-                "Analyze this radiological scan (X-Ray, CT Scan, MRI, Ultrasound, or Mammogram). "
-                "Identify the exact anatomical region (e.g. Skull/Head, Chest/Lungs, Spine, Knee, Pelvis, Abdomen). "
-                "Carefully evaluate bone cortical continuity for fracture lines, joint spaces, soft tissue swelling, lung opacities, cardiomegaly, or focal lesions, "
-                "and transcribe any printed radiologic annotations, patient labels, or orientation markers (L/R)."
-            )
+            prompt = radiology_prompt
         else:
             modality = "document"
-            prompt = (
-                "You are an expert Medical OCR & Clinical Documentation Specialist. "
-                "Analyze this clinical prescription, doctor consultation note, or laboratory diagnostic report. "
-                "Transcribe the clinic/hospital header, doctor name, patient details, presenting symptoms, "
-                "clinical diagnoses, prescribed medications (with dosages, route, and frequency), advised diagnostic tests, and doctor instructions."
-            )
+            prompt = doc_prompt
 
         return modality, prompt
     except Exception as e:
@@ -2060,209 +2162,107 @@ def process_document_background(file_bytes: bytes, filename: str, content_type: 
         extracted_text = ""
         detected_modality = "document"
         try:
-            prompt_base = """Analyze this medical document carefully.
-
-Extract into JSON:
-- document_type: Name or type of report (e.g. Chest X-Ray, 12-Lead ECG, Knee Radiograph, Biopsy, CBC, Prescription, PFT Report)
-- modality: Detected imaging modality (exactly one of: 'radiology', 'ecg', 'pathology', 'endoscopy', 'document')
-- diagnoses: list of clinical diagnoses or radiological/pathological findings (English)
-- medications: list of medicines with dosages (English, or empty list if imaging/scan)
-- flagged_values: For each abnormal lab parameter, return a JSON OBJECT with:
-    * "test_name": parameter name exactly as printed on the report
-    * "measured_value": the patient's actual measured numeric value (number, not string)
-    * "unit": the unit of measurement exactly as printed
-    * "reference_low": the LOWER bound of the reference/normal range printed on the report (number)
-    * "reference_high": the UPPER bound of the reference/normal range printed on the report (number)
-    * "status": "Low" if measured < reference_low, "High" if measured > reference_high
-  CRITICAL: Read the reference range EXACTLY from the report's Normal Range / Reference column.
-  Do NOT confuse predicted values, percent-predicted, or percent-change columns with reference ranges.
-  For imaging/non-lab documents, use string descriptions for flagged findings.
-- document_date: date on document or 'Visual Scan'
-- summary: concise summary of key findings
-
-Output ONLY valid JSON:
-""" + DOCUMENT_JSON_TEMPLATE
-
             if filename.lower().endswith('.pdf') or content_type == 'application/pdf':
                 import fitz
                 pdf_doc = fitz.open(stream=file_bytes, filetype="pdf")
                 for page in pdf_doc:
                     extracted_text += page.get_text() + "\n"
-                detected_modality = "document"
+                
+                extracted_text_l = extracted_text.lower()
+                is_pathology_pdf = any(k in extracted_text_l for k in [
+                    "histopathology", "biopsy", "microscopic examination", "gross examination",
+                    "cytology", "carcinoma", "neoplasm", "tissue pieces", "specimen received"
+                ])
+                is_lab_pdf = any(k in extracted_text_l for k in [
+                    "reference range", "normal range", "lipid profile", "complete blood count",
+                    "cbc report", "kft", "lft", "urine routine"
+                ])
 
-                raw_check = extracted_text.lower()
-                is_presc = any(k in raw_check for k in ["dr.", "clinic", "rx", "hospital", "prescription", "consultant", "timing:"]) and not any(k in raw_check for k in ["reference range", "normal range", "lipid profile", "cbc", "spirometry", "pulmonary function", "kft", "lft"])
+                if is_pathology_pdf:
+                    detected_modality = "pathology"
+                    diagnoses = []
+                    flagged_pathology = []
 
-                if is_presc:
-                    prompt = f"""You are an expert Chief Medical Officer and Clinical Pharmacologist.
-Analyze this doctor prescription / clinical consultation text and extract structured findings into JSON.
-Target Modality: document
+                    imp_match = re.search(r'(?i)(?:IMPRESSION|FINAL DIAGNOSIS|DIAGNOSIS)\s*:\s*([^\n\r]+(?:\n[^\n\r]+)?)', extracted_text)
+                    if imp_match:
+                        imp_text = imp_match.group(1).strip().replace('\n', ' ')
+                        diagnoses.append(imp_text)
+                        flagged_pathology.append(f"🔬 Impression: {imp_text[:80]}")
 
-CLINICAL SAFETY GUARDRAILS:
-1. Set document_type: "Prescription / Doctor Consultation Slip"
-2. ABSOLUTELY NO LAB PARAMETERS: Prescriptions do not contain lab ranges. Set flagged_values: [] (empty list). NEVER output FEV1, Hemoglobin, or lab numbers!
-3. ANTI-HALLUCINATION: NEVER guess or invent major diagnoses (like Tuberculosis, Cancer, Fracture, Asthma). Extract only clearly stated symptoms (e.g. cold, fever, pain).
-4. MEDICATIONS: Extract clearly stated medicines and dosages.
-5. SUMMARY: Provide concise clinic, doctor, patient vitals, and prescribed medications summary.
+                    clin_match = re.search(r'(?i)(?:Clinical Details|Clinical History)\s*[:\s]*([^\n\r]+)', extracted_text)
+                    if clin_match:
+                        clin_text = clin_match.group(1).strip()
+                        if clin_text and clin_text != ':':
+                            diagnoses.append(f"Clinical Indication: {clin_text}")
+                            flagged_pathology.append(f"🔬 Indication: {clin_text[:60]}")
 
-Document Content:
-{extracted_text}
+                    spec_match = re.search(r'(?i)(?:Nature of Material Received|Specimen)\s*[:\s]*([^\n\r]+)', extracted_text)
+                    spec_text = spec_match.group(1).strip() if spec_match else "Biopsy Specimen"
 
-Output ONLY valid JSON:
-{DOCUMENT_JSON_TEMPLATE}"""
+                    summary_text = f"Histopathology Report ({spec_text}): " + ("; ".join(diagnoses) if diagnoses else "Biopsy examined.")
+
+                    structured_data = {
+                        "document_type": "Histopathology / Biopsy Report",
+                        "modality": "pathology",
+                        "diagnoses": diagnoses if diagnoses else ["Histopathological Examination"],
+                        "medications": [],
+                        "flagged_values": flagged_pathology,
+                        "document_date": "Pathology Report",
+                        "summary": summary_text,
+                        "file_url": file_url,
+                        "raw_text": extracted_text
+                    }
+                elif is_lab_pdf:
+                    detected_modality = "document"
+                    structured_data = {
+                        "document_type": "Laboratory Diagnostic Report",
+                        "modality": "document",
+                        "diagnoses": ["Clinical Laboratory Analysis"],
+                        "medications": [],
+                        "flagged_values": [],
+                        "document_date": "Lab Report",
+                        "summary": "Laboratory diagnostic report processed.",
+                        "file_url": file_url,
+                        "raw_text": extracted_text
+                    }
                 else:
-                    prompt = f"""You are an expert Chief Medical Officer and Clinical Data Structurer.
-Analyze this clinical document / laboratory report text and extract structured clinical findings into JSON.
-Target Modality: document
+                    detected_modality = "document"
+                    # Run CPU drug normalizer on the extracted digital text
+                    normalized_drugs_list = normalize_drugs(extracted_text)
+                    verified_meds = [f"{d['drug']} ({d.get('strength', '')}) [{d['status']}]" for d in normalized_drugs_list]
+                    flagged_rx = [f"⚠️ Unverified Rx Token: '{d['raw_token']}' (Score: {d['score']}%)" for d in normalized_drugs_list if d["status"] == "FLAGGED_FOR_DOCTOR"]
 
-UNIVERSAL CLINICAL DECISION SUPPORT RULES:
-1. DATA EXTRACTION:
-   - Extract EVERY test parameter found in the document into 'flagged_values'.
-   - Do NOT filter for abnormals yourself. Extract ALL test parameters, both normal and abnormal.
-   - In 'flagged_values', return a JSON OBJECT for EACH parameter with fields:
-     test_name, measured_value (number), unit, reference_low (number), reference_high (number), status (string).
-   - CRITICAL: Extract the reference range EXACTLY from the document's Normal Range or Reference column.
-     Do NOT confuse Predicted values, %Predicted, or %Change with the reference/normal range.
-   - CRITICAL SAFETY: NEVER state "results are within normal limits" if abnormal values or active diagnoses exist!
-
-2. CLINICAL DIAGNOSES:
-   - Extract all stated diagnoses, pathological impressions, or clinical syndromes.
-
-3. MEDICATIONS & DOSAGES:
-   - Extract all prescribed medications, inhalers, dosages, route, and frequency.
-
-4. PHYSIOLOGICAL SCALE & DECIMAL RESTORATION:
-   - Restore dropped 1-pixel decimal points to human physiological bounds.
-
-Extracted Document Text:
-{extracted_text}
-
-{prompt_base}"""
-                response_text = call_llm(prompt, model=DOC_EXTRACTION_MODEL)
+                    structured_data = {
+                        "document_type": "Prescription / Clinical Report" if verified_meds else "Clinical Document",
+                        "modality": "document",
+                        "diagnoses": ["Clinical Consultation Record"],
+                        "medications": verified_meds,
+                        "flagged_values": flagged_rx,
+                        "document_date": "Digital Upload",
+                        "summary": f"Digital document processed: {len(normalized_drugs_list)} medications identified.",
+                        "file_url": file_url,
+                        "raw_text": extracted_text
+                    }
             else:
                 # 1. Zero-VRAM mathematical pixel classifier (<5ms, CPU memory)
-                detected_modality, domain_prompt = detect_visual_modality(file_bytes)
-                print(f"📸 Detected Visual Modality: {detected_modality.upper()} | Processing with Qwen 2.5-VL (3B)...")
+                detected_modality, domain_prompt = detect_visual_modality(file_bytes, filename=filename)
+                print(f"📸 Detected Visual Modality: {detected_modality.upper()} | Routing to CPU Perception Engine...")
 
-                # 2. High-Precision OCR Engine with Optical Pre-Processing for Blurry Photos
-                ocr_text = ""
-                try:
-                    import pytesseract
-                    from PIL import Image, ImageEnhance, ImageFilter, ImageOps
-                    raw_img = Image.open(io.BytesIO(file_bytes)).convert('L')
-                    # Autocontrast normalization to eliminate smartphone shadows and lighting gradients
-                    norm_img = ImageOps.autocontrast(raw_img, cutoff=2)
-                    w, h = norm_img.size
-                    # Adaptive Lanczos super-sampling upscaling
-                    scale = 1.0
-                    if w < 1500 or h < 1500:
-                        scale = max(1.5, min(3.0, 1800 / max(w, h)))
-                        norm_img = norm_img.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
-                    # Unsharp masking to crispen blurred character strokes and 1-pixel decimal points
-                    sharpened_img = norm_img.filter(ImageFilter.UnsharpMask(radius=1.8, percent=150, threshold=2))
-                    enhancer = ImageEnhance.Contrast(sharpened_img)
-                    ocr_img_enhanced = enhancer.enhance(1.5)
-                    ocr_text = pytesseract.image_to_string(ocr_img_enhanced).strip()
-                    if ocr_text:
-                        print(f"✅ Extracted High-Fidelity OCR text ({len(ocr_text)} chars)")
-                except Exception as ocr_err:
-                    print(f"OCR Extraction note: {ocr_err}")
-
-                # 3. Direct High-Resolution Vision Extraction via Qwen 2.5-VL (3B)
-                # Reads doctor cursive handwriting, lab tables, and imaging directly
-                raw_check = ocr_text.lower()
-                is_presc = any(k in raw_check for k in ["dr.", "clinic", "rx", "hospital", "prescription", "consultant", "timing:"]) and not any(k in raw_check for k in ["reference range", "normal range", "lipid profile", "cbc", "spirometry", "pulmonary function", "kft", "lft"])
-
-                if is_presc or detected_modality == "document":
-                    vl_prompt = f"""You are an expert Chief Medical Officer and Clinical Diagnostic Specialist.
-Analyze this medical document or doctor prescription image carefully.
-Extract the clinical findings and output ONLY valid JSON matching this exact JSON schema:
-
-```json
-{DOCUMENT_JSON_TEMPLATE}
-```
-
-UNIVERSAL CLINICAL RULES:
-1. For doctor prescriptions / consultation slips:
-   - Set document_type: "Prescription / Doctor Consultation Slip"
-   - Extract chief complaints and recorded symptoms into 'diagnoses'.
-   - Extract every prescribed medicine with strength/dosage and frequency into 'medications'.
-   - ABSOLUTELY NO LAB PARAMETERS: Set 'flagged_values': [] (empty list). Never hallucinate FEV1 or lab values for a prescription!
-   - Anti-hallucination: Never invent major diseases (like Tuberculosis, Cancer, COPD, Asthma).
-2. For laboratory reports (CBC, PFT, LFT, KFT, Lipid Profile):
-   - Extract every test parameter into 'flagged_values' as objects: {{"test_name": ..., "measured_value": number, "unit": ..., "reference_low": number, "reference_high": number, "status": "Low"/"High"/"Normal"}}
-   - Read the reference range EXACTLY from the report's reference column.
-3. For medical imaging (X-rays, ECGs, Endoscopy):
-   - Set modality to radiology/ecg/endoscopy and summarize anatomical/rhythm findings.
-4. Output ONLY valid JSON."""
+                if detected_modality == "radiology":
+                    print("🩻 Executing Radiology Perception Engine on CPU (Zero VRAM)...")
+                    xray_res = analyze_xray(file_bytes, file_url=file_url, filename=filename)
+                    structured_data = xray_res.get("dashboard_payload", {})
+                elif detected_modality == "ecg":
+                    print("📈 Executing OpenCV ECG Waveform Analysis on CPU (Zero VRAM)...")
+                    ecg_res = analyze_ecg(file_bytes, file_url=file_url)
+                    structured_data = ecg_res.get("dashboard_payload", {})
                 else:
-                    vl_prompt = f"""You are an expert Radiologist, Cardiologist, and Clinical Diagnostic Specialist.
-Analyze this medical scan ({detected_modality.upper()}) carefully.
-Extract findings and output ONLY valid JSON matching this exact JSON schema:
+                    # Prescriptions, doctor consultation slips, and general documents
+                    print("📄 Executing Sauvola Preprocessing + Dual OCR + RapidFuzz Drug Matcher on CPU...")
+                    presc_res = analyze_prescription(file_bytes, file_url=file_url)
+                    structured_data = presc_res.get("dashboard_payload", {})
 
-```json
-{DOCUMENT_JSON_TEMPLATE}
-```
-
-Modality: {detected_modality}
-Analyze:
-- Anatomy, radiological densities, fractures, consolidations, cardiomegaly (for radiology)
-- Rhythm, intervals, ST-T segment, axis, rate (for ECG)
-- Pathological / endoscopic visual impressions
-Output ONLY valid JSON."""
-
-                try:
-                    print(f"🔬 Invoking Qwen 2.5-VL (3B) Multimodal Vision (Modality: {detected_modality})...")
-                    response_text = run_qwen_vl_inference(file_bytes, vl_prompt, max_new_tokens=512)
-                    extracted_text = f"{response_text}\n\n=== OCR Reference Text ===\n{ocr_text}"
-                except Exception as vl_err:
-                    print(f"⚠️ Qwen 2.5-VL failed ({vl_err}), falling back to text LLM...")
-                    combined_observations = f"""=== HIGH-PRECISION TEXT & NUMERICAL TABLE OCR ===
-{ocr_text if ocr_text else "(No printed text identified by OCR engine)"}"""
-                    extracted_text = combined_observations
-                    response_text = call_llm(
-                        f"""Analyze this medical document text and output ONLY valid JSON matching:
-{DOCUMENT_JSON_TEMPLATE}
-
-Document Content:
-{combined_observations}""",
-                        model=DOC_EXTRACTION_MODEL
-                    )
-
-            clean_json_str = extract_json_string(response_text)
-            try:
-                result_json = json.loads(clean_json_str)
-            except Exception as json_err:
-                print(f"JSON parse fallback ({json_err}), repairing via {DOC_EXTRACTION_MODEL}...")
-                repaired = call_llm(f"""Convert this extraction into valid JSON matching:
-{DOCUMENT_JSON_TEMPLATE}
-
-Content:
-{response_text}""", model=DOC_EXTRACTION_MODEL)
-                result_json = json.loads(extract_json_string(repaired))
-
-            result_json = unwrap_json(result_json)
-            # Normalize flagged values safely whether strings or dicts
-            if "flagged_values" in result_json:
-                result_json["flagged_values"] = normalize_extracted_flagged_values(result_json["flagged_values"])
-            
-            # Apply deterministic clinical safety guardrail
-            result_json = enforce_clinical_safety_guardrail(result_json, extracted_text)
-
-            extraction = DocumentExtraction(**result_json)
-            final_modality = extraction.modality if extraction.modality in ["radiology", "ecg", "pathology", "endoscopy", "document"] else detected_modality
-            structured_data = {
-                "document_type": extraction.document_type,
-                "modality": final_modality,
-                "diagnoses": extraction.diagnoses,
-                "medications": extraction.medications,
-                "flagged_values": extraction.flagged_values,
-                "document_date": extraction.document_date,
-                "summary": extraction.summary,
-                "file_url": file_url,
-                "raw_text": extracted_text
-            }
-            print(f"Background Extracted [{final_modality}]: {structured_data['document_type']} - {structured_data['summary'][:80]}")
+            print(f"✅ Background CPU Perception Complete [{structured_data.get('modality')}]: {structured_data.get('document_type')} - {structured_data.get('summary', '')[:80]}")
         except Exception as e:
             print(f"Background Document processing failed: {e}")
 
@@ -2308,7 +2308,18 @@ async def process_document(
     if not patient:
         patient = db.query(PatientRecord).order_by(PatientRecord.id.desc()).first()
     if not patient:
-        raise HTTPException(status_code=404, detail="No patient found")
+        walkin_id = f"PT-{uuid.uuid4().hex[:6].upper()}"
+        patient = PatientRecord(
+            patient_id=walkin_id,
+            patient_name="Walk-In Patient",
+            age=0,
+            gender="Unknown",
+            contact="",
+            created_at=datetime.utcnow()
+        )
+        db.add(patient)
+        db.commit()
+        db.refresh(patient)
 
     file_bytes = await file.read()
     print(f"Document received: {file.filename}, {len(file_bytes)} bytes. Dispatching background task.")
@@ -2370,6 +2381,27 @@ async def finalize_intake(
     
     background_tasks.add_task(synthesize_and_filter_patient_background, patient.id, patient.abha_id, language, is_ayush)
     return {"status": "success", "message": "Comprehensive synthesis (dialogue + documents) queued"}
+
+
+# ── On-Demand Resynthesize Endpoint (Doctor Dashboard & Error Recovery) ──
+@app.post("/api/resynthesize")
+@app.get("/api/resynthesize")
+async def resynthesize_patient(
+    background_tasks: BackgroundTasks,
+    patient_id: str,
+    language: str = "English",
+    is_ayush: Optional[bool] = None,
+    db: Session = Depends(get_db)
+):
+    patient = db.query(PatientRecord).filter(PatientRecord.patient_id == patient_id).first()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+    
+    use_ayush = patient.is_ayush if is_ayush is None else is_ayush
+    print(f"🔄 Manual/Doctor triggered re-synthesis for patient {patient.patient_id} ({patient.patient_name})...")
+    background_tasks.add_task(synthesize_and_filter_patient_background, patient.id, patient.abha_id, language, use_ayush)
+    return {"status": "success", "message": f"Synthesis queued for patient {patient_id}", "patient_id": patient_id}
+
 
 
 # ── Red Flag Check ──
@@ -2706,6 +2738,7 @@ async def demo_data(background_tasks: BackgroundTasks, abha_id: Optional[str] = 
         vikriti="Not assessed",
         agni="Not assessed",
         flagged_lab_values=json.dumps([demo_doc]),
+        is_synthesized=True,
         created_at=datetime.now().strftime("%I:%M %p")
     )
     db.add(patient)

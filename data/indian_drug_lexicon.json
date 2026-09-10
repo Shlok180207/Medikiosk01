@@ -1,0 +1,177 @@
+[
+  {
+    "brand_name": "Augmentin 625 Duo",
+    "generic_name": "Amoxicillin + Clavulanic Acid",
+    "strength": "500mg + 125mg",
+    "category": "Antibiotic",
+    "common_indications": ["Bacterial infections", "Respiratory tract infection", "Sinusitis"]
+  },
+  {
+    "brand_name": "Azithral 500",
+    "generic_name": "Azithromycin",
+    "strength": "500mg",
+    "category": "Macrolide Antibiotic",
+    "common_indications": ["Throat infection", "Tonsillitis", "Chest infection"]
+  },
+  {
+    "brand_name": "Paracetamol 650",
+    "generic_name": "Acetaminophen / Paracetamol",
+    "strength": "650mg",
+    "category": "Antipyretic / Analgesic",
+    "common_indications": ["Fever", "Body pain", "Headache"]
+  },
+  {
+    "brand_name": "Dolo 650",
+    "generic_name": "Acetaminophen / Paracetamol",
+    "strength": "650mg",
+    "category": "Antipyretic / Analgesic",
+    "common_indications": ["Fever", "Mild to moderate pain"]
+  },
+  {
+    "brand_name": "Pan 40",
+    "generic_name": "Pantoprazole",
+    "strength": "40mg",
+    "category": "Proton Pump Inhibitor (PPI)",
+    "common_indications": ["Acidity", "GERD", "Gastric Ulcer"]
+  },
+  {
+    "brand_name": "Pantocid 40",
+    "generic_name": "Pantoprazole",
+    "strength": "40mg",
+    "category": "Proton Pump Inhibitor (PPI)",
+    "common_indications": ["Gastritis", "Peptic Ulcer", "Reflux"]
+  },
+  {
+    "brand_name": "Omez 20",
+    "generic_name": "Omeprazole",
+    "strength": "20mg",
+    "category": "Proton Pump Inhibitor (PPI)",
+    "common_indications": ["Acidity", "Heartburn", "Dyspepsia"]
+  },
+  {
+    "brand_name": "Metrogyl 400",
+    "generic_name": "Metronidazole",
+    "strength": "400mg",
+    "category": "Amoebicide / Antibacterial",
+    "common_indications": ["Diarrhea", "Amoebic dysentery", "Dental infection"]
+  },
+  {
+    "brand_name": "Amoxyclav 625",
+    "generic_name": "Amoxicillin + Clavulanate Potassium",
+    "strength": "625mg",
+    "category": "Penicillin Antibiotic",
+    "common_indications": ["Skin infection", "UTI", "Bronchitis"]
+  },
+  {
+    "brand_name": "Cifran 500",
+    "generic_name": "Ciprofloxacin",
+    "strength": "500mg",
+    "category": "Fluoroquinolone Antibiotic",
+    "common_indications": ["Urinary tract infection", "Typhoid", "Gastroenteritis"]
+  },
+  {
+    "brand_name": "Montek LC",
+    "generic_name": "Montelukast + Levocetirizine",
+    "strength": "10mg + 5mg",
+    "category": "Anti-allergic / Bronchodilator",
+    "common_indications": ["Allergic rhinitis", "Asthma prophylaxis", "Sneezing and runny nose"]
+  },
+  {
+    "brand_name": "Allegra 120",
+    "generic_name": "Fexofenadine",
+    "strength": "120mg",
+    "category": "Antihistamine",
+    "common_indications": ["Seasonal allergy", "Hives", "Urticaria"]
+  },
+  {
+    "brand_name": "Telma 40",
+    "generic_name": "Telmisartan",
+    "strength": "40mg",
+    "category": "Antihypertensive (ARB)",
+    "common_indications": ["Hypertension", "Cardiovascular risk reduction"]
+  },
+  {
+    "brand_name": "Amlong 5",
+    "generic_name": "Amlodipine",
+    "strength": "5mg",
+    "category": "Calcium Channel Blocker",
+    "common_indications": ["High blood pressure", "Angina"]
+  },
+  {
+    "brand_name": "Glycomet 500",
+    "generic_name": "Metformin Hydrochloride",
+    "strength": "500mg",
+    "category": "Oral Hypoglycemic Agent",
+    "common_indications": ["Type 2 Diabetes Mellitus"]
+  },
+  {
+    "brand_name": "Thyronorm 50",
+    "generic_name": "Levothyroxine Sodium",
+    "strength": "50mcg",
+    "category": "Thyroid Hormone",
+    "common_indications": ["Hypothyroidism"]
+  },
+  {
+    "brand_name": "Shelcal 500",
+    "generic_name": "Calcium Carbonate + Vitamin D3",
+    "strength": "500mg + 250IU",
+    "category": "Mineral Supplement",
+    "common_indications": ["Osteopenia", "Calcium deficiency", "Bone health"]
+  },
+  {
+    "brand_name": "Becosules",
+    "generic_name": "Vitamin B-Complex + Vitamin C",
+    "strength": "Capsule",
+    "category": "Multivitamin",
+    "common_indications": ["Mouth ulcers", "General debility", "Nutritional deficiency"]
+  },
+  {
+    "brand_name": "Combiflam",
+    "generic_name": "Ibuprofen + Paracetamol",
+    "strength": "400mg + 325mg",
+    "category": "NSAID Analgesic",
+    "common_indications": ["Dental pain", "Joint inflammation", "Sprain"]
+  },
+  {
+    "brand_name": "Voveran 50",
+    "generic_name": "Diclofenac Sodium",
+    "strength": "50mg",
+    "category": "NSAID Analgesic",
+    "common_indications": ["Severe pain", "Arthritis", "Post-operative swelling"]
+  },
+  {
+    "brand_name": "Ciplox 500",
+    "generic_name": "Ciprofloxacin",
+    "strength": "500mg",
+    "category": "Fluoroquinolone Antibiotic",
+    "common_indications": ["Bacterial infections", "Eye/Ear infections"]
+  },
+  {
+    "brand_name": "Atorva 20",
+    "generic_name": "Atorvastatin",
+    "strength": "20mg",
+    "category": "Statin (Lipid-lowering)",
+    "common_indications": ["Hypercholesterolemia", "CAD prevention"]
+  },
+  {
+    "brand_name": "Ecosprin 75",
+    "generic_name": "Aspirin",
+    "strength": "75mg",
+    "category": "Antiplatelet",
+    "common_indications": ["Heart attack prevention", "Stroke prophylaxis"]
+  },
+  {
+    "brand_name": "Clopilet 75",
+    "generic_name": "Clopidogrel",
+    "strength": "75mg",
+    "category": "Antiplatelet",
+    "common_indications": ["Post-PCI Stenting", "Acute Coronary Syndrome"]
+  },
+  {
+    "brand_name": "Ascoril D Plus",
+    "generic_name": "Dextromethorphan + Chlorpheniramine + Phenylephrine",
+    "strength": "Syrup",
+    "category": "Cough Syrup",
+    "common_indications": ["Dry cough", "Nasal congestion", "Allergic cough"]
+  }
+]

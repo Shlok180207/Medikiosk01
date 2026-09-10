@@ -1,0 +1,43 @@
+# MediKiosk v2 — Fully Offline Multi-Modal Architecture under 8GB VRAM
+# Hardware Target: NVIDIA RTX 4060 (8GB VRAM) + Multi-Core CPU (16GB+ RAM)
+
+# ── Core Framework & Backend ──
+fastapi>=0.110.0
+uvicorn[standard]>=0.28.0
+pydantic>=2.6.0
+sqlalchemy>=2.0.0
+python-dotenv>=1.0.0
+python-multipart>=0.0.9
+
+# ── GPU Audio ASR (CUDA int8) ──
+faster-whisper>=1.0.0
+
+# ── Deep Learning & Medical Imaging Perception (CPU-Bound) ──
+torch>=2.2.0
+torchvision>=0.17.0
+torchxrayvision>=1.2.3
+
+# ── Signal & Image Processing (CPU-Bound) ──
+opencv-python>=4.9.0.80
+scipy>=1.12.0
+numpy>=1.26.0
+pillow>=10.2.0
+
+# ── Handwriting OCR & Drug Normalization (CPU-Bound) ──
+rapidfuzz>=3.6.0
+transformers>=4.38.0
+# Optional / complementary OCR engines:
+# paddleocr>=2.7.3
+# paddlepaddle>=2.6.0
+# pytesseract>=0.3.10
+
+# ── Local GPU LLM Inference ──
+# Option A: Local Ollama (pip install ollama)
+ollama>=0.1.7
+# Option B: llama-cpp-python (with CUDA support if installed from wheel)
+# llama-cpp-python>=0.2.56
+
+# ── TTS & Utilities ──
+gTTS>=2.5.0
+requests>=2.31.0
+tqdm>=4.66.0
