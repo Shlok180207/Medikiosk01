@@ -54,19 +54,42 @@ def classify_image_modality(image_input: Union[str, bytes, np.ndarray]) -> Dict[
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
     aspect_ratio = round(float(w) / max(float(h), 1.0), 2)
 
-    # ── Feature 1: ECG Pink/Red/Orange Grid Line Density ──
-    mask_red1 = cv2.inRange(hsv, np.array([0, 35, 70]), np.array([14, 255, 255]))
-    mask_red2 = cv2.inRange(hsv, np.array([160, 35, 70]), np.array([180, 255, 255]))
-    mask_pink = cv2.inRange(hsv, np.array([130, 20, 100]), np.array([160, 255, 255]))
+    # ── Feature 1: White Paper Document Detection ──
+    # Documents (prescriptions, consultation slips, printed lab sheets) feature predominantly bright/white paper (gray > 130, low saturation)
+    white_paper_mask = (gray > 130) & (hsv[:, :, 1] < 60)
+    white_paper_ratio = float(np.sum(white_paper_mask)) / float(gray.size)
+
+    # ── Feature 2: ECG Pink/Salmon Grid Line Density ──
+    # Restrict hue to pure red/salmon and pink (exclude brown/wood desks: OpenCV Hue 8..15 with medium saturation)
+    mask_red1 = cv2.inRange(hsv, np.array([0, 50, 120]), np.array([7, 255, 255]))
+    mask_red2 = cv2.inRange(hsv, np.array([172, 50, 120]), np.array([180, 255, 255]))
+    mask_pink = cv2.inRange(hsv, np.array([140, 30, 110]), np.array([170, 255, 255]))
     grid_mask = mask_red1 | mask_red2 | mask_pink
     pink_grid_ratio = float(np.sum(grid_mask > 0)) / float(grid_mask.size)
 
-    if pink_grid_ratio >= 0.04:
+    # Check for orthogonal grid structure if pink/red lines are present
+    has_grid_structure = False
+    if pink_grid_ratio >= 0.05:
+        kernel_h = cv2.getStructuringElement(cv2.MORPH_RECT, (11, 1))
+        kernel_v = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 11))
+        h_lines = cv2.morphologyEx(grid_mask, cv2.MORPH_OPEN, kernel_h)
+        v_lines = cv2.morphologyEx(grid_mask, cv2.MORPH_OPEN, kernel_v)
+        grid_cross = (h_lines > 0) & (v_lines > 0)
+        has_grid_structure = float(np.sum(grid_cross)) / float(grid_mask.size) > 0.002
+
+    # An ECG waveform strip must have calibrated pink grid paper, horizontal aspect ratio (>= 0.8),
+    # and MUST NOT be a portrait white-paper consultation slip (white_paper_ratio >= 0.35)
+    is_ecg_candidate = (
+        (pink_grid_ratio >= 0.08 and white_paper_ratio < 0.35 and aspect_ratio >= 0.8) or
+        (has_grid_structure and aspect_ratio >= 0.95 and white_paper_ratio < 0.45)
+    )
+
+    if is_ecg_candidate:
         return {
             "modality": "ECG_WAVEFORM",
             "confidence": round(min(0.99, 0.70 + pink_grid_ratio * 3.0), 2),
             "target_pipeline": "perception.ecg.extract_ecg_metrics",
-            "features": {"pink_grid_ratio": round(pink_grid_ratio, 3), "aspect_ratio": aspect_ratio},
+            "features": {"pink_grid_ratio": round(pink_grid_ratio, 3), "aspect_ratio": aspect_ratio, "white_paper_ratio": round(white_paper_ratio, 3)},
             "description": "12-Lead ECG strip with characteristic calibrated grid and lead tracing."
         }
 

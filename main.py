@@ -115,11 +115,7 @@ def unload_whisper():
                 pass
             print("✅ Faster-Whisper deloaded. Full GPU VRAM returned to system.")
 
-# Warm up Whisper on backend startup so initial patient speech transcription is instant
-try:
-    get_whisper_pipeline()
-except Exception as e:
-    print(f"Initial Whisper warmup note: {e}")
+# Faster-Whisper is lazily loaded on demand inside speech endpoints (/api/process-audio)
 
 
 # ── LLM Helpers ──
@@ -1760,29 +1756,44 @@ def detect_visual_modality(image_bytes: bytes, filename: str = "") -> tuple[str,
         dark_pixel_ratio = float(np.mean(v < 75))
         bright_pixel_ratio = float(np.mean(v > 180))
 
-        # 1. ECG Pink/Salmon grid: Hue in [225..255] or [0..22], Saturation in [25..180], Brightness > 90
-        ecg_grid_mask = ((h >= 225) | (h <= 22)) & (s >= 25) & (s <= 180) & (v >= 90)
-        ecg_ratio = float(np.mean(ecg_grid_mask))
+        # Inspect central 60% of image where clinical document / strip body resides
+        h_c = h[30:120, 30:120]
+        s_c = s[30:120, 30:120]
+        v_c = v[30:120, 30:120]
 
-        # 2. Histopathology H&E violet/purple/magenta stain: Hue in [175..235], Saturation > 30, Brightness > 60
-        pathology_mask = (h >= 175) & (h <= 235) & (s >= 30) & (v >= 60)
+        center_white_paper_ratio = float(np.mean((s_c < 45) & (v_c > 140)))
+
+        # 1. ECG Pink/Salmon grid: Real ECG paper has calibrated millimetric pink grid lines
+        # across the paper body itself (not on background wooden desk borders).
+        # Specifically: Hue in [230..255] (pink/magenta) or [0..12] (bright red/salmon),
+        # Saturation >= 45, Brightness >= 130 (NOT dark wood desks which have V < 130 and S in 30..90)
+        ecg_center_mask = ((h_c >= 230) | (h_c <= 12)) & (s_c >= 45) & (s_c <= 200) & (v_c >= 130)
+        ecg_center_ratio = float(np.mean(ecg_center_mask))
+
+        # 2. Histopathology H&E violet/purple/magenta stain: Hue in [175..235], Saturation > 35, Brightness > 60
+        pathology_mask = (h_c >= 175) & (h_c <= 235) & (s_c >= 35) & (v_c >= 60)
         pathology_ratio = float(np.mean(pathology_mask))
 
-        # 3. Endoscopy / Mucosal / Dermoscopy warm tones: Hue in [0..35] or [240..255], Saturation > 40
-        endoscopy_mask = ((h <= 35) | (h >= 240)) & (s >= 40)
+        # 3. Endoscopy / Mucosal / Dermoscopy warm tones: Hue in [0..30] or [240..255], Saturation > 45
+        endoscopy_mask = ((h_c <= 30) | (h_c >= 240)) & (s_c >= 45)
         endoscopy_ratio = float(np.mean(endoscopy_mask))
 
         # 4. Radiograph Blue/Cyan tint (common Kodak/digital monitor tint): Hue in [130..180], Saturation > 20
         blue_cyan_mask = (h >= 130) & (h <= 180) & (s >= 20)
         blue_cyan_ratio = float(np.mean(blue_cyan_mask))
 
-        if ecg_ratio > 0.12:
+        # White paper document suppression: if center is predominantly white paper (>35%), it is ALWAYS a document/prescription
+        img_aspect = float(img.width) / max(float(img.height), 1.0)
+        if center_white_paper_ratio > 0.35:
+            modality = "document"
+            prompt = doc_prompt
+        elif ecg_center_ratio > 0.15 and center_white_paper_ratio < 0.30 and img_aspect >= 0.9:
             modality = "ecg"
             prompt = ecg_prompt
-        elif pathology_ratio > 0.15:
+        elif pathology_ratio > 0.20:
             modality = "pathology"
             prompt = pathology_prompt
-        elif endoscopy_ratio > 0.25 and mean_s > 35:
+        elif endoscopy_ratio > 0.30 and mean_s > 40:
             modality = "endoscopy"
             prompt = endoscopy_prompt
         elif ((mean_s < 30) or (blue_cyan_ratio > 0.30)) and (mean_v < 175 or dark_pixel_ratio > 0.15) and (bright_pixel_ratio < 0.55):
@@ -2754,4 +2765,10 @@ async def demo_data(background_tasks: BackgroundTasks, abha_id: Optional[str] = 
 
 if __name__ == "__main__":
     print("🏥 Starting MediKiosk v2 Backend (Offline Mode)...")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        reload_excludes=["uploads/*", "*.db", "*.db*", "*.log", "data/*"]
+    )

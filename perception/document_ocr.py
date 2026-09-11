@@ -71,11 +71,16 @@ def run_cpu_ocr(image_path: str) -> str:
     if img is None:
         return ""
 
+    h, w = img.shape[:2]
+    if w < 1500:
+        scale = 1600 / w
+        img = cv2.resize(img, (1600, int(h * scale)), interpolation=cv2.INTER_CUBIC)
+
     # Attempt PaddleOCR (CPU mode)
     try:
         from paddleocr import PaddleOCR
-        ocr = PaddleOCR(use_angle_cls=True, lang='en', show_log=False)
-        result = ocr.ocr(image_path, cls=True)
+        ocr = PaddleOCR(use_angle_cls=True, lang='en', use_gpu=False, show_log=False)
+        result = ocr.ocr(img, cls=True)
         lines = []
         if result and result[0]:
             for item in result[0]:
@@ -87,11 +92,15 @@ def run_cpu_ocr(image_path: str) -> str:
     except Exception:
         pass
 
-    # Fallback to pytesseract if installed
+    # Fallback to pytesseract with CLAHE contrast enhancement
     try:
         import pytesseract
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        return pytesseract.image_to_string(gray)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        contrast = clahe.apply(gray)
+        text_psm4 = pytesseract.image_to_string(contrast, config='--oem 3 --psm 4')
+        text_psm3 = pytesseract.image_to_string(contrast, config='--oem 3 --psm 3')
+        return text_psm4 if len(text_psm4.split('\n')) >= len(text_psm3.split('\n')) else text_psm3
     except Exception:
         pass
 

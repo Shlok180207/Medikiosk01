@@ -16,7 +16,11 @@ const isPdfFile = (url) => {
 const getModalityMeta = (doc) => {
   const mod = (doc.modality || '').toLowerCase();
   const type = (doc.document_type || '').toLowerCase();
-  if (mod === 'radiology' || type.includes('x-ray') || type.includes('ct') || type.includes('mri') || type.includes('radiograph') || type.includes('ultrasound') || type.includes('scan')) {
+  
+  if (type.includes('prescription') || type.includes('doctor slip') || type.includes('consultation') || type.includes('rx slip')) {
+    return { title: 'Prescription / Rx', icon: '📄', bg: '#ecfdf5', color: '#065f46', border: '1px solid #a7f3d0' };
+  }
+  if (mod === 'radiology' || type.includes('x-ray') || /\b(ct|ct-scan|cat scan)\b/i.test(type) || type.includes('mri') || type.includes('radiograph') || type.includes('ultrasound')) {
     return { title: 'Radiology', icon: '🩻', bg: '#f1f5f9', color: '#334155', border: '1px solid #cbd5e1' };
   }
   if (mod === 'ecg' || type.includes('ecg') || type.includes('ekg') || type.includes('rhythm') || type.includes('cardio')) {
@@ -28,7 +32,7 @@ const getModalityMeta = (doc) => {
   if (mod === 'endoscopy' || type.includes('endoscop') || type.includes('colonoscop') || type.includes('laparoscop') || type.includes('dermoscop') || type.includes('fundus')) {
     return { title: 'Endoscopy', icon: '🩺', bg: '#fffbeb', color: '#92400e', border: '1px solid #fde68a' };
   }
-  return { title: 'Lab / Rx', icon: '📄', bg: '#f8fafc', color: '#334155', border: '1px solid #cbd5e1' };
+  return { title: 'Clinical Document', icon: '📄', bg: '#f8fafc', color: '#334155', border: '1px solid #cbd5e1' };
 };
 
 const getLikelihoodStyle = (likelihood) => {

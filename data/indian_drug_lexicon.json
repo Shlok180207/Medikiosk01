@@ -49,6 +49,13 @@
     "common_indications": ["Acidity", "Heartburn", "Dyspepsia"]
   },
   {
+    "brand_name": "Razo 20",
+    "generic_name": "Rabeprazole",
+    "strength": "20mg",
+    "category": "Proton Pump Inhibitor (PPI)",
+    "common_indications": ["GERD", "Hyperacidity"]
+  },
+  {
     "brand_name": "Metrogyl 400",
     "generic_name": "Metronidazole",
     "strength": "400mg",
@@ -68,6 +75,97 @@
     "strength": "500mg",
     "category": "Fluoroquinolone Antibiotic",
     "common_indications": ["Urinary tract infection", "Typhoid", "Gastroenteritis"]
+  },
+  {
+    "brand_name": "Ciplox 500",
+    "generic_name": "Ciprofloxacin",
+    "strength": "500mg",
+    "category": "Fluoroquinolone Antibiotic",
+    "common_indications": ["Bacterial infections", "Eye/Ear infections"]
+  },
+  {
+    "brand_name": "Gembax 400",
+    "generic_name": "Gemifloxacin",
+    "strength": "400mg",
+    "category": "Fluoroquinolone Antibiotic",
+    "common_indications": ["Community acquired pneumonia", "Acute bronchitis"]
+  },
+  {
+    "brand_name": "Gemina 400",
+    "generic_name": "Gemifloxacin",
+    "strength": "400mg",
+    "category": "Fluoroquinolone Antibiotic",
+    "common_indications": ["Respiratory tract infections", "Bacterial pneumonia"]
+  },
+  {
+    "brand_name": "Gemifloxacin",
+    "generic_name": "Gemifloxacin",
+    "strength": "320mg / 400mg",
+    "category": "Fluoroquinolone Antibiotic",
+    "common_indications": ["Bacterial infection", "Lower respiratory tract infection"]
+  },
+  {
+    "brand_name": "Hepcoac",
+    "generic_name": "Gallactagogue / Liver Support Formulation",
+    "strength": "Tablet",
+    "category": "Galactagogue / Hepatic Tonic",
+    "common_indications": ["Lactation support", "Liver dysfunction", "Convalescence"]
+  },
+  {
+    "brand_name": "Daclatasvir",
+    "generic_name": "Daclatasvir",
+    "strength": "60mg",
+    "category": "Antiviral",
+    "common_indications": ["Chronic Hepatitis C"]
+  },
+  {
+    "brand_name": "HB Set",
+    "generic_name": "Ferrous Ascorbate + Folic Acid",
+    "strength": "100mg + 1.5mg",
+    "category": "Hematinic / Iron Supplement",
+    "common_indications": ["Iron deficiency anemia", "Pregnancy supplement", "Nutritional deficiency"]
+  },
+  {
+    "brand_name": "Orofer XT",
+    "generic_name": "Ferrous Ascorbate + Folic Acid",
+    "strength": "100mg + 1.5mg",
+    "category": "Hematinic / Iron Supplement",
+    "common_indications": ["Anemia", "Iron replenishment"]
+  },
+  {
+    "brand_name": "Ferrous Ascorbate + Folic Acid",
+    "generic_name": "Ferrous Ascorbate + Folic Acid",
+    "strength": "100mg + 1.5mg",
+    "category": "Hematinic",
+    "common_indications": ["Iron deficiency anemia", "Fatigue", "Low hemoglobin"]
+  },
+  {
+    "brand_name": "Bandy Plus",
+    "generic_name": "Albendazole + Ivermectin",
+    "strength": "400mg + 6mg",
+    "category": "Anthelmintic / Antiparasitic",
+    "common_indications": ["Intestinal parasitic worm infection", "Filariasis"]
+  },
+  {
+    "brand_name": "Albendazole + Ivermectin",
+    "generic_name": "Albendazole + Ivermectin",
+    "strength": "200mg + 1.5mg / 5ml",
+    "category": "Anthelmintic Suspension",
+    "common_indications": ["Worm infestation", "Deworming"]
+  },
+  {
+    "brand_name": "Ivecop 12",
+    "generic_name": "Ivermectin",
+    "strength": "12mg",
+    "category": "Antiparasitic",
+    "common_indications": ["Scabies", "Strongyloidiasis", "Parasitic infection"]
+  },
+  {
+    "brand_name": "Zendel 400",
+    "generic_name": "Albendazole",
+    "strength": "400mg",
+    "category": "Anthelmintic",
+    "common_indications": ["Hookworm", "Roundworm", "Tapeworm"]
   },
   {
     "brand_name": "Montek LC",
@@ -140,11 +238,53 @@
     "common_indications": ["Severe pain", "Arthritis", "Post-operative swelling"]
   },
   {
-    "brand_name": "Ciplox 500",
-    "generic_name": "Ciprofloxacin",
-    "strength": "500mg",
-    "category": "Fluoroquinolone Antibiotic",
-    "common_indications": ["Bacterial infections", "Eye/Ear infections"]
+    "brand_name": "Zerodol SP",
+    "generic_name": "Aceclofenac + Paracetamol + Serratiopeptidase",
+    "strength": "100mg + 325mg + 15mg",
+    "category": "NSAID Anti-inflammatory",
+    "common_indications": ["Post-surgical edema", "Traumatic pain", "Spondylitis"]
+  },
+  {
+    "brand_name": "Zerodol P",
+    "generic_name": "Aceclofenac + Paracetamol",
+    "strength": "100mg + 325mg",
+    "category": "NSAID Analgesic",
+    "common_indications": ["Osteoarthritis", "Muscle ache", "Fever with body ache"]
+  },
+  {
+    "brand_name": "Chymoral Forte",
+    "generic_name": "Trypsin + Chymotrypsin",
+    "strength": "100,000 Armour Units",
+    "category": "Proteolytic Anti-inflammatory",
+    "common_indications": ["Hematoma", "Post-operative edema", "Sports injuries"]
+  },
+  {
+    "brand_name": "Taxim O 200",
+    "generic_name": "Cefixime",
+    "strength": "200mg",
+    "category": "Cephalosporin Antibiotic",
+    "common_indications": ["Typhoid fever", "UTI", "Otitis media", "Pharyngitis"]
+  },
+  {
+    "brand_name": "Gudcef 200",
+    "generic_name": "Cefpodoxime Proxetil",
+    "strength": "200mg",
+    "category": "Cephalosporin Antibiotic",
+    "common_indications": ["Sinusitis", "Bronchitis", "Skin and soft tissue infections"]
+  },
+  {
+    "brand_name": "Monocef 1g",
+    "generic_name": "Ceftriaxone",
+    "strength": "1g",
+    "category": "Injectable Cephalosporin",
+    "common_indications": ["Severe bacterial infections", "Meningitis", "Sepsis"]
+  },
+  {
+    "brand_name": "O2",
+    "generic_name": "Ofloxacin + Ornidazole",
+    "strength": "200mg + 500mg",
+    "category": "Antidiarrheal / Antibacterial",
+    "common_indications": ["Infectious diarrhea", "Gastrointestinal infections", "Dental infections"]
   },
   {
     "brand_name": "Atorva 20",
@@ -152,6 +292,13 @@
     "strength": "20mg",
     "category": "Statin (Lipid-lowering)",
     "common_indications": ["Hypercholesterolemia", "CAD prevention"]
+  },
+  {
+    "brand_name": "Rosuvas 10",
+    "generic_name": "Rosuvastatin",
+    "strength": "10mg",
+    "category": "Statin (Lipid-lowering)",
+    "common_indications": ["Dyslipidemia", "Plaque stabilization"]
   },
   {
     "brand_name": "Ecosprin 75",
@@ -173,5 +320,19 @@
     "strength": "Syrup",
     "category": "Cough Syrup",
     "common_indications": ["Dry cough", "Nasal congestion", "Allergic cough"]
+  },
+  {
+    "brand_name": "Liv 52",
+    "generic_name": "Herbal Hepatoprotective Formulation",
+    "strength": "Tablet / Syrup",
+    "category": "Hepatoprotective",
+    "common_indications": ["Loss of appetite", "Jaundice recovery", "Liver health"]
+  },
+  {
+    "brand_name": "Udiliv 300",
+    "generic_name": "Ursodeoxycholic Acid (UDCA)",
+    "strength": "300mg",
+    "category": "Bile Acid Derivative",
+    "common_indications": ["Gallstones dissolution", "Primary biliary cirrhosis"]
   }
 ]
