@@ -1006,11 +1006,20 @@ print("\\n--- [tunnel.log] Recent Output ---")
 !tail -n 15 /content/tunnel.log
 """)
 
-    code_cell("""# ── Clean Shutdown (Run when finished) ──
-!pkill -f cloudflared
-!pkill -f uvicorn
-!pkill -f "ollama serve"
-print("🛑 All MediKiosk services have been terminated.")
+    code_cell("""# ── Clean Shutdown (Manual Execution Only) ──
+# To safely shut down all services when you are completely finished with your session,
+# change DO_SHUTDOWN to True and run this cell manually.
+DO_SHUTDOWN = False
+
+if DO_SHUTDOWN:
+    import subprocess
+    subprocess.run(["pkill", "-f", "cloudflared"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(["pkill", "-f", "uvicorn"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(["pkill", "-f", "ollama serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    print("🛑 All MediKiosk services have been terminated.")
+else:
+    print("ℹ️ MediKiosk services (FastAPI, Ollama, Cloudflare) are running in the background.")
+    print("   To stop them, set DO_SHUTDOWN = True and re-run this cell.")
 """)
 
     notebook = {
