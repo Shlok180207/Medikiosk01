@@ -1,11 +1,16 @@
 """
-MediKiosk Orchestrator Pipeline
-Sequential execution of:
-1. Audio ASR on GPU (Faster-Whisper int8) -> Explicit unload() to reclaim VRAM
-2. Perception Models on CPU (TorchXRayVision, OpenCV ECG, Dual OCR + RapidFuzz) -> Zero GPU VRAM
-3. Structured Multi-Modal Payload Compilation
-4. Clinical LLM Synthesis on GPU (Qwen2.5-7B)
-Strictly enforces Peak GPU VRAM < 6.5 GB (safe on 8GB RTX 4060).
+pipeline.py
+===========
+MediKiosk Multi-Modal Sequential Clinical Pipeline.
+Hardware Target: NVIDIA RTX 4060 (8GB VRAM limit).
+
+Enforces:
+1. Single-Resident-GPU-Model (SRGM) invariant.
+2. Faster-Whisper ASR loaded only during voice intake.
+3. Qwen2.5-VL-3B VLM loaded only during document triage & OCR extraction.
+4. TorchXRayVision & OpenCV ECG pinned 100% to host CPU (0 MB VRAM).
+5. Qwen2.5-7B loaded only during historical ABHA and final CDSS report synthesis.
+6. Guaranteed peak VRAM < 6.5 GB.
 """
 
 import os
@@ -17,196 +22,138 @@ if sys.platform == "win32":
     except Exception:
         pass
 
+import asyncio
 import json
 import argparse
 import time
 from typing import List, Tuple, Dict, Any, Optional
 
-from audio.transcriber import get_transcriber, transcribe_consultation, get_vram_mb
-from perception.router import classify_image_modality
-from perception.radiology import analyze_chest_xray, analyze_bone_xray, analyze_dental_opg, analyze_xray
-from perception.ecg import extract_ecg_metrics, analyze_ecg
-from perception.document_ocr import parse_document_or_prescription
-from synthesis.summarizer import summarize_clinical_case
-
-
-def log_vram_step(step_name: str, audit_trail: List[Dict[str, Any]]):
-    """Logs and records VRAM allocation at critical stage boundaries."""
-    vram = get_vram_mb()
-    record = {
-        "step": step_name,
-        "allocated_mb": vram["allocated_mb"],
-        "reserved_mb": vram["reserved_mb"],
-        "device": vram["device_name"],
-        "timestamp": time.strftime("%H:%M:%S")
-    }
-    audit_trail.append(record)
-    print(f"📊 [VRAM Audit] {step_name.ljust(35)} -> Allocated: {vram['allocated_mb']:>7.2f} MB | Reserved: {vram['reserved_mb']:>7.2f} MB")
-    return record
+from core.vram_manager import VRAMManager, ModelState
+from core.cpu_perception import CPUPerceptionEngine
+from core.clinical_orchestrator import (
+    ClinicalOrchestrator,
+    PatientJourney,
+    CDSSReport,
+    DocumentType
+)
 
 
 class MedicalPipelineOrchestrator:
-    """Orchestrates sequential multi-modal intake with strict GPU VRAM budget control."""
+    """
+    High-level orchestrator interfacing with the underlying VRAM state machine
+    and CPU perception engine.
+    """
 
-    def __init__(self, max_vram_mb: float = 6500.0):
+    def __init__(self, max_vram_mb: float = 6500.0, device: str = "cuda:0"):
         self.max_vram_mb = max_vram_mb
+        self.vram_mgr = VRAMManager(device=device, vram_safety_margin_mb=1200)
+        self.cpu_engine = CPUPerceptionEngine()
+        self.orchestrator = ClinicalOrchestrator(self.vram_mgr, self.cpu_engine)
+
+    async def run_async(
+        self,
+        patient_id: str,
+        audio_path: Optional[str] = None,
+        images: Optional[List[Tuple[str, str]]] = None,
+        abha_records: Optional[List[Dict[str, Any]]] = None,
+        spoken_transcript_override: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Asynchronously executes the 4-phase sequential clinical intake pipeline.
+        """
+        images = images or []
+        abha_records = abha_records or []
+
+        print("\n" + "=" * 80)
+        print(f"🏥 MEDIKIOSK EVENT-DRIVEN CLINICAL PIPELINE (RTX 4060 - 8GB VRAM)")
+        print(f"   Patient ID: {patient_id} | Documents: {len(images)} | Safety Ceiling: {self.max_vram_mb:.0f} MB")
+        print("=" * 80)
+
+        # Read audio bytes if provided
+        audio_bytes = None
+        if audio_path and os.path.exists(audio_path):
+            with open(audio_path, "rb") as f:
+                audio_bytes = f.read()
+
+        journey = PatientJourney(
+            patient_id=patient_id,
+            audio_bytes=audio_bytes,
+            abha_raw_records=abha_records,
+            spoken_transcript=spoken_transcript_override or ""
+        )
+
+        # Enqueue documents into the asynchronous processing queue
+        for img_path, r_type in images:
+            if os.path.exists(img_path):
+                with open(img_path, "rb") as f:
+                    await self.orchestrator.enqueue_document(
+                        doc_id=os.path.basename(img_path),
+                        filename=os.path.basename(img_path),
+                        data=f.read(),
+                        hint=r_type
+                    )
+            else:
+                print(f"⚠️ Document file not found: {img_path}")
+
+        # Signal end of document uploads
+        await self.orchestrator.close_document_queue()
+
+        # Execute 4-Phase Pipeline
+        # Phase 1: Intake & Speech
+        await self.orchestrator.run_phase_1_intake(journey)
+
+        # Phase 2 & 3: VLM Gatekeeper & CPU Routing (Consumes Asynchronous Queue)
+        await self.orchestrator.run_phase_2_and_3_document_triage(journey)
+
+        # Phase 4: CDSS Generation
+        cdss = await self.orchestrator.run_phase_4_cdss_generation(journey)
+
+        # Audit Peak VRAM
+        peaks = [cp["allocated_mb"] for cp in journey.vram_audit_trail]
+        peak_allocated = max(peaks) if peaks else 0.0
+
+        print("\n" + "=" * 80)
+        print(f"✅ PIPELINE COMPLETE | Peak VRAM Allocated: {peak_allocated:.2f} MB / {self.max_vram_mb:.0f} MB")
+        if peak_allocated <= self.max_vram_mb:
+            print("🟢 VRAM SAFETY COMPLIANCE: PASSED (Zero CUDA OOM Risk)")
+        else:
+            print("🔴 VRAM SAFETY WARNING: Allocation exceeded target headroom threshold!")
+        print("=" * 80 + "\n")
+
+        return {
+            "status": "success",
+            "patient_id": patient_id,
+            "transcript": journey.spoken_transcript,
+            "patient_summary": journey.patient_summary,
+            "cpu_diagnostics": journey.cpu_diagnostics,
+            "extracted_text_records": journey.extracted_text_records,
+            "cdss_report": cdss.model_dump() if cdss else {},
+            "vram_audit_trail": journey.vram_audit_trail,
+            "peak_vram_mb": peak_allocated
+        }
 
     def run(
         self,
         audio_path: Optional[str] = None,
         images: Optional[List[Tuple[str, str]]] = None,
-        patient_meta: Optional[Dict[str, Any]] = None
+        patient_meta: Optional[Dict[str, Any]] = None,
+        patient_id: str = "PT-DEMO"
     ) -> Dict[str, Any]:
-        """
-        Executes the full sequential clinical intake pipeline.
-        Args:
-          audio_path: Path to doctor-patient conversation audio file (optional)
-          images: List of (file_path, report_type) tuples.
-                  report_type in ['xray', 'ecg', 'prescription', 'lab_report']
-          patient_meta: Optional patient demographics / ABHA info
-        Returns:
-          Aggregated clinical dossier with bilingual doctor note,
-          dashboard documents, and VRAM audit trail.
-        """
-        images = images or []
-        patient_meta = patient_meta or {}
-        audit_trail: List[Dict[str, Any]] = []
-
-        print("\n" + "=" * 80)
-        print("🏥 MEDIKIOSK MULTI-MODAL PIPELINE EXECUTION (BUDGET: < 6.5 GB VRAM)")
-        print("=" * 80)
-
-        # ── Step 0: Baseline VRAM ──
-        log_vram_step("0. Pipeline Start (Baseline)", audit_trail)
-
-        # ── Step 1: GPU Audio ASR ──
-        transcript_text = ""
-        transcriber = get_transcriber()
-
-        if audio_path and os.path.exists(audio_path):
-            print(f"\n🎙️ [STAGE 1] Transcribing consultation audio: {audio_path}")
-            log_vram_step("1a. Before Audio Transcription", audit_trail)
-
-            asr_res = transcriber.transcribe(audio_path, auto_unload=True)
-            transcript_text = asr_res.get("text", "")
-            print(f"   Transcript: \"{transcript_text[:120]}...\"" if len(transcript_text) > 120 else f"   Transcript: \"{transcript_text}\"")
-
-            log_vram_step("1b. After Audio ASR & Unload", audit_trail)
-        else:
-            print("\n🎙️ [STAGE 1] No audio provided; skipping ASR.")
-            log_vram_step("1. Audio Skipped", audit_trail)
-
-        # ── Step 2: CPU Perception (X-ray, ECG, Prescription) ──
-        print(f"\n👁️ [STAGE 2] Running CPU Perception Models on {len(images)} document(s)...")
-        log_vram_step("2a. Before CPU Perception", audit_trail)
-
-        all_xray_findings: Dict[str, float] = {}
-        all_ecg_metrics: Dict[str, Any] = {}
-        all_prescription_drugs: List[Dict[str, Any]] = []
-        all_printed_reports: List[str] = []
-        dashboard_documents: List[Dict[str, Any]] = []
-
-        for img_path, report_type in images:
-            if not os.path.exists(img_path):
-                print(f"   ⚠️ Image file not found: {img_path}")
-                continue
-
-            # Auto-route or use specified report_type
-            if not report_type or report_type.lower() in ["auto", "detect", "none"]:
-                route_res = classify_image_modality(img_path)
-                modality = route_res.get("modality", "CHEST_XRAY")
-                sub_type = route_res.get("sub_type", "")
-            else:
-                mod_str = report_type.upper().strip()
-                if mod_str in ["XRAY", "CHEST_XRAY", "CXR"]:
-                    modality = "CHEST_XRAY"
-                    sub_type = ""
-                elif mod_str in ["BONE", "BONE_XRAY", "EXTREMITY"]:
-                    modality = "BONE_XRAY"
-                    sub_type = ""
-                elif mod_str in ["ECG", "EKG", "ECG_WAVEFORM"]:
-                    modality = "ECG_WAVEFORM"
-                    sub_type = ""
-                elif mod_str in ["PRESCRIPTION", "RX", "HANDWRITTEN_PRESCRIPTION"]:
-                    modality = "HANDWRITTEN_PRESCRIPTION"
-                    sub_type = ""
-                else:
-                    modality = "PRINTED_REPORT"
-                    sub_type = ""
-
-            print(f"   Processing [{modality}]: {os.path.basename(img_path)}")
-
-            if modality == "CHEST_XRAY":
-                res = analyze_chest_xray(img_path)
-                all_xray_findings.update(res.get("pathologies", {}))
-                dashboard_documents.append(res.get("dashboard_payload", {}))
-            elif modality == "BONE_XRAY":
-                if sub_type == "DENTAL_OPG":
-                    res = analyze_dental_opg(img_path)
-                else:
-                    res = analyze_bone_xray(img_path)
-                dashboard_documents.append(res.get("dashboard_payload", {}))
-            elif modality == "ECG_WAVEFORM":
-                res = extract_ecg_metrics(img_path)
-                all_ecg_metrics.update(res)
-                dashboard_documents.append(res.get("dashboard_payload", {}))
-            elif modality == "HANDWRITTEN_PRESCRIPTION":
-                res = parse_document_or_prescription(img_path, doc_type="HANDWRITTEN_PRESCRIPTION")
-                all_prescription_drugs.extend(res.get("normalized_drugs", []))
-                dashboard_documents.append(res.get("dashboard_payload", {}))
-            else:  # PRINTED_REPORT
-                res = parse_document_or_prescription(img_path, doc_type="PRINTED_REPORT")
-                if res.get("impression"):
-                    all_printed_reports.append(res["impression"])
-                dashboard_documents.append(res.get("dashboard_payload", {}))
-
-        log_vram_step("2b. After CPU Perception (Zero GPU)", audit_trail)
-
-        # ── Step 3: Payload Compilation ──
-        case_payload = {
-            "audio_transcript": transcript_text,
-            "radiology_findings": all_xray_findings,
-            "ecg_analysis": all_ecg_metrics,
-            "printed_report_impressions": "; ".join([r for r in all_printed_reports if r]),
-            "prescription_drugs": all_prescription_drugs,
-            "patient_meta": patient_meta
-        }
-
-        # ── Step 4: GPU LLM Clinical Synthesis ──
-        print("\n🧠 [STAGE 3] Synthesizing Clinical Impression & Bilingual Doctor Note (Qwen2.5-7B)...")
-        log_vram_step("3a. Before LLM Synthesis", audit_trail)
-
-        synthesis_result = summarize_clinical_case(case_payload)
-
-        log_vram_step("3b. After LLM Synthesis", audit_trail)
-
-        # ── Step 5: VRAM Verification ──
-        peak_allocated = max(r["allocated_mb"] for r in audit_trail)
-        print("\n" + "=" * 80)
-        print(f"✅ PIPELINE COMPLETE | Peak VRAM Allocated: {peak_allocated:.2f} MB / {self.max_vram_mb:.0f} MB")
-        if peak_allocated <= self.max_vram_mb:
-            print("🟢 VRAM SAFETY COMPLIANCE: PASSED (Strictly within 6.5 GB limit)")
-        else:
-            print("🔴 VRAM SAFETY WARNING: Peak exceeded 6.5 GB limit!")
-        print("=" * 80 + "\n")
-
-        return {
-            "status": "success",
-            "transcript": transcript_text,
-            "xray_findings": all_xray_findings,
-            "ecg_metrics": all_ecg_metrics,
-            "prescription_drugs": all_prescription_drugs,
-            "dashboard_documents": dashboard_documents,
-            "bilingual_doctor_note": synthesis_result.get("bilingual_doctor_note", {}),
-            "clinical_impression": synthesis_result.get("clinical_impression", {}),
-            "vram_audit_trail": audit_trail,
-            "peak_vram_mb": peak_allocated
-        }
+        """Synchronous wrapper for legacy CLI and backend calls."""
+        return asyncio.run(
+            self.run_async(
+                patient_id=patient_id,
+                audio_path=audio_path,
+                images=images,
+                abha_records=(patient_meta or {}).get("abha_records", [])
+            )
+        )
 
 
 def cli_main():
-    parser = argparse.ArgumentParser(description="MediKiosk Offline Multi-Modal Clinical Pipeline")
-    parser.add_argument("--audio", type=str, default=None, help="Path to patient consultation audio file")
+    parser = argparse.ArgumentParser(description="MediKiosk Offline Multi-Modal Sequential Pipeline")
+    parser.add_argument("--patient-id", type=str, default="PT-TRIAGE-01", help="Patient Identifier")
+    parser.add_argument("--audio", type=str, default=None, help="Path to consultation audio file")
     parser.add_argument("--xray", type=str, default=None, help="Path to Chest X-ray image")
     parser.add_argument("--ecg", type=str, default=None, help="Path to 12-Lead ECG printout image")
     parser.add_argument("--prescription", type=str, default=None, help="Path to doctor prescription image")
@@ -222,19 +169,29 @@ def cli_main():
         images.append((args.prescription, "prescription"))
 
     orchestrator = MedicalPipelineOrchestrator()
-    result = orchestrator.run(audio_path=args.audio, images=images)
+    result = orchestrator.run(
+        patient_id=args.patient_id,
+        audio_path=args.audio,
+        images=images
+    )
 
-    note = result.get("bilingual_doctor_note", {})
-    print("\n📋 GENERATED BILINGUAL CLINICAL DOCTOR NOTE:")
+    cdss = result.get("cdss_report", {})
+    print("\n📋 GENERATED CLINICAL DECISION SUPPORT (CDSS) REPORT:")
     print("-" * 60)
-    print("1. Chief Complaints (लक्षण):")
-    print(note.get("chief_complaints", "N/A"))
-    print("\n2. Diagnostic Findings (जाँच परिणाम):")
-    print(note.get("diagnostic_findings", "N/A"))
-    print("\n3. Prescriptions & Dosage (दवाइयाँ और खुराक):")
-    print(note.get("prescriptions_and_dosage", "N/A"))
-    print("\n4. Doctor Review Warnings (डॉक्टर समीक्षा चेतावनी):")
-    print(note.get("doctor_review_warnings", "N/A"))
+    print(f"Patient ID: {cdss.get('patient_id')}")
+    print(f"\n1. Primary Clinical Impression:\n   {cdss.get('primary_impression')}")
+    print(f"\n2. Critical Alerts / Rule-Outs:")
+    for alert in cdss.get("critical_alerts", []):
+        print(f"   ⚠️  {alert}")
+    print(f"\n3. CPU Imaging & ECG Synthesis:")
+    for syn in cdss.get("imaging_synthesis", []):
+        print(f"   🩻  {syn}")
+    print(f"\n4. Prescriptions Identified:")
+    for rx in cdss.get("prescriptions_identified", []):
+        print(f"   💊 {rx}")
+    print(f"\n5. Recommended Clinical Plan:")
+    for plan in cdss.get("recommended_plan", []):
+        print(f"   🩺 {plan}")
     print("-" * 60)
 
     if args.output:

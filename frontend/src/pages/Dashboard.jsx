@@ -16,7 +16,7 @@ const isPdfFile = (url) => {
 const getModalityMeta = (doc) => {
   const mod = (doc.modality || '').toLowerCase();
   const type = (doc.document_type || '').toLowerCase();
-  
+
   if (type.includes('prescription') || type.includes('doctor slip') || type.includes('consultation') || type.includes('rx slip')) {
     return { title: 'Prescription / Rx', icon: '📄', bg: '#ecfdf5', color: '#065f46', border: '1px solid #a7f3d0' };
   }
@@ -67,11 +67,21 @@ export default function Dashboard() {
 
   /* ─── Data Fetching (unchanged) ─────────────────────────────────── */
   const fetchQueue = async () => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
     try {
-      const response = await fetch(`${API_BASE_URL}/patients`);
+      const response = await fetch(`${API_BASE_URL}/patients`, { signal: controller.signal });
+      clearTimeout(timeoutId);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const patients = await response.json();
-      setQueue(patients);
-    } catch (error) { console.error('Failed to fetch queue', error); }
+      if (Array.isArray(patients)) {
+        setQueue(patients);
+      }
+    } catch (error) {
+      console.warn('Failed to fetch queue:', error);
+    } finally {
+      clearTimeout(timeoutId);
+    }
   };
 
   useEffect(() => {
@@ -132,23 +142,21 @@ export default function Dashboard() {
     } catch (error) { console.error('Failed to delete patient', error); }
   };
 
+  // Auto-refresh queue and active patient data every 5s so background perceptions appear live
   useEffect(() => {
-    const interval = setInterval(fetchQueue, 10000);
+    const interval = setInterval(() => {
+      fetchQueue();
+      if (selectedPatientId) {
+        fetchData();
+      }
+    }, 5000);
     fetchQueue();
     return () => clearInterval(interval);
-  }, []);
+  }, [selectedPatientId]);
 
   useEffect(() => {
     if (selectedPatientId) { fetchData(); fetchHistory(); setShowAllHistory(false); }
   }, [selectedPatientId]);
-
-  useEffect(() => {
-    if (!selectedPatientId) return;
-    if (patientData && !patientData.is_synthesized) {
-      const pollTimer = setInterval(() => { fetchData(); }, 3000);
-      return () => clearInterval(pollTimer);
-    }
-  }, [selectedPatientId, patientData?.is_synthesized]);
 
   const fetchHistory = async () => {
     if (!selectedPatientId) return;
@@ -177,7 +185,16 @@ export default function Dashboard() {
         <div style={{ flex: 1, overflowY: 'auto' }}>
           {queue.length === 0 ? (
             <div style={{ padding: '40px 20px', textAlign: 'center' }}>
-              <p style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>No patients in queue</p>
+              <p style={{ fontSize: '12px', color: 'var(--color-text-muted)', marginBottom: '8px' }}>No patients in queue</p>
+              <button
+                onClick={fetchQueue}
+                style={{
+                  background: '#f8fafc', border: '1px solid #cbd5e1', borderRadius: '4px',
+                  padding: '4px 10px', fontSize: '11px', fontWeight: 600, cursor: 'pointer', color: '#475569'
+                }}
+              >
+                🔄 Refresh Queue
+              </button>
             </div>
           ) : (
             queue.map(p => (
@@ -441,18 +458,7 @@ export default function Dashboard() {
                     </div>
                   )}
 
-                  {/* Critical Rule-Outs — subtle clinical alert tags */}
-                  {ci.critical_rule_outs && ci.critical_rule_outs.length > 0 && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginBottom: '8px' }}>
-                      <span style={{ fontSize: '10px', fontWeight: 700, color: 'var(--color-danger)', letterSpacing: '0.04em' }}>RULE OUT:</span>
-                      {ci.critical_rule_outs.map((r, idx) => (
-                        <span key={idx} style={{
-                          background: '#fef2f2', color: '#991b1b', border: '1px solid #fecaca',
-                          borderRadius: '4px', padding: '2px 8px', fontSize: '11px', fontWeight: 600
-                        }}>{r}</span>
-                      ))}
-                    </div>
-                  )}
+
 
                   {/* Suggested Tests */}
                   {ci.suggested_investigations && ci.suggested_investigations.length > 0 && (
@@ -545,13 +551,24 @@ export default function Dashboard() {
             )}
 
             {/* ═══════════════════════════════════════════════════════
-                 DOCUMENTS & LABS — Compact view
+                 DOCUMENTS & LABS — Always visible with live count
                 ═══════════════════════════════════════════════════════ */}
-            {patientData.flagged_lab_values && patientData.flagged_lab_values !== '[]' && (
-              <CollapsibleSection icon="📄" title="Processed Documents & Labs" defaultOpen={true}>
-                <DocumentsView data={patientData.flagged_lab_values} patientId={patientData.patient_id} />
-              </CollapsibleSection>
-            )}
+            <CollapsibleSection
+              icon="📄"
+              title={`Processed Documents & Labs${(() => {
+                try {
+                  const arr = JSON.parse(patientData.flagged_lab_values || '[]');
+                  return Array.isArray(arr) && arr.length > 0 ? ` (${arr.length})` : '';
+                } catch (e) { return ''; }
+              })()}`}
+              defaultOpen={true}
+            >
+              <DocumentsView
+                data={patientData.flagged_lab_values}
+                patientId={patientData.patient_id}
+                onRefresh={fetchData}
+              />
+            </CollapsibleSection>
 
             {/* ═══════════════════════════════════════════════════════
                  ABHA PAST HISTORY — Compact Timeline
@@ -821,13 +838,48 @@ function CompactVisitRow({ visit, isRelevant }) {
 /* ═══════════════════════════════════════════════════════════════════
    DOCUMENTS VIEW — Preserved with compact default + expand
    ═══════════════════════════════════════════════════════════════════ */
-function DocumentsView({ data, patientId }) {
+function DocumentsView({ data, patientId, onRefresh }) {
   const [modalDoc, setModalDoc] = useState(null);
   const [expandedDoc, setExpandedDoc] = useState(null);
 
+  let parsed = [];
   try {
-    const parsed = JSON.parse(data);
-    if (!Array.isArray(parsed) || parsed.length === 0) return <p style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>No documents</p>;
+    if (data && typeof data === 'string') {
+      parsed = JSON.parse(data);
+    } else if (Array.isArray(data)) {
+      parsed = data;
+    }
+  } catch (e) {
+    parsed = [];
+  }
+
+  if (!Array.isArray(parsed) || parsed.length === 0) {
+    return (
+      <div style={{
+        padding: '16px 20px', textAlign: 'center', background: 'var(--color-bg)',
+        borderRadius: '6px', border: '1px dashed var(--color-border)'
+      }}>
+        <p style={{ fontSize: '13px', fontWeight: 600, color: 'var(--color-text)', margin: '0 0 4px 0' }}>
+          No Documents Attached
+        </p>
+        <p style={{ fontSize: '11px', color: 'var(--color-text-muted)', margin: '0 0 10px 0' }}>
+          If documents were recently scanned at the kiosk, they will appear here once background perception completes.
+        </p>
+        {onRefresh && (
+          <button
+            onClick={onRefresh}
+            style={{
+              background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '4px',
+              padding: '4px 12px', fontSize: '11px', fontWeight: 600, cursor: 'pointer',
+              color: '#334155', display: 'inline-flex', alignItems: 'center', gap: '4px'
+            }}
+          >
+            🔄 Check for Processed Documents
+          </button>
+        )}
+      </div>
+    );
+  }
 
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
@@ -1074,7 +1126,4 @@ function DocumentsView({ data, patientId }) {
         )}
       </div>
     );
-  } catch {
-    return <p style={{ fontSize: '12px', color: 'var(--color-text-muted)' }}>{data}</p>;
-  }
 }

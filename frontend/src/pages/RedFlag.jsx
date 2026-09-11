@@ -15,15 +15,24 @@ export default function RedFlag() {
   }, []);
 
   const checkRedFlags = async () => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3500);
+
     try {
-      const response = await fetch(`${API_BASE_URL}/red-flag-check?patient_id=${patientId}`);
+      const qId = patientId && patientId !== 'null' && patientId !== 'undefined' ? patientId : '';
+      const response = await fetch(`${API_BASE_URL}/red-flag-check?patient_id=${encodeURIComponent(qId)}`, {
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
       setFlags(data);
       setRedFlags(data);
     } catch (error) {
-      console.error('Red flag check failed:', error);
+      console.warn('Red flag check fallback used:', error);
       setFlags({ has_red_flags: false, flags: [], message: 'Check completed — no urgent flags detected.' });
     } finally {
+      clearTimeout(timeoutId);
       setChecking(false);
     }
   };

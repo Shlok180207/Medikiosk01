@@ -417,7 +417,8 @@ NON_DRUG_STOPWORDS = {
     "documents", "get well soon", "sign", "radiologist", "interventional", "vascular",
     "colony", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
     "closed", "uid", "release", "chief", "complaints", "complaint", "nausea", "fever", "pain",
-    "knee", "chest", "cough", "vomiting", "weakness", "headache"
+    "knee", "chest", "cough", "vomiting", "weakness", "headache", "edema", "swelling",
+    "puffiness", "dyspnea", "shortness", "breath", "pressure", "bp", "pulse", "spo2", "temp"
 }
 
 DOSAGE_ADMIN_STOPWORDS = {
@@ -427,7 +428,9 @@ DOSAGE_ADMIN_STOPWORDS = {
     "inj", "injection", "drops", "ointment", "cream", "suspension", "gel", "tot", "total",
     "duration", "dosage", "dose", "frequency", "instructions", "medicine", "srno", "sr", "no",
     "timing", "water", "milk", "meals", "meal", "stat", "sos", "od", "bd", "tds", "qid",
-    "1-0-1", "0-1-0", "1-1-1", "0-0-1", "1-0-0"
+    "1-0-1", "0-1-0", "1-1-1", "0-0-1", "1-0-0", "10 am", "10 pm", "powder", "ip powder",
+    "mth", "mths", "month", "months", "wk", "wks", "week", "weeks", "continue", "review",
+    "stop", "smoke", "smoking", "alcohol"
 }
 
 
@@ -601,17 +604,34 @@ def parse_rx_deterministic(raw_text: str) -> List[Dict[str, Any]]:
         if any(f in line_upper for f in ["GET WELL SOON", "DOCUMENTS", "SIGNATURE", "DR. SAMEER", "DOCTOR SIGN"]):
             break
 
+        line_clean = line.strip().lower()
+
+        # Supplemental unit / timing lines for current prescription item
+        if current:
+            if line_clean in ['mg', 'ml', 'mcg', 'gm']:
+                continue
+            if re.match(r'^\(?\d+(?:\.\d+)?\)?\s*(?:mg|mcg|ml|gm)\s*$', line_clean):
+                if not current.get('strength'):
+                    current['strength'] = line.strip()
+                continue
+            if re.match(r'^\d{1,2}\s*(?:am|pm)\b', line_clean):
+                if not current.get('dosage'):
+                    current['dosage'] = line.strip()
+                continue
+
         # Check for numbered item (e.g., '1) TAB. GEMBAX', '(2) Tab Tazloc', '4. Pantocid', '(4) Panlucid (100 mg)', '- (5) Provigan')
         m_num = re.match(r'^(?:[-\*•]?\s*[\(\[\{]?\s*\d+\s*[\.\)\-\]\}\s]+)(.+)', line)
         line_content = m_num.group(1).strip() if m_num else line
         line_content = re.sub(r'^[\(\[\{]?\s*\d+\s*[\.\)\-\]\}\s]+', '', line_content).strip()
+        line_cnt_l = line_content.lower()
 
-        is_lifestyle_advice = any(adv in line_content.lower() for adv in ["stop alcohol", "stop smoking", "smoking", "alcohol", "bed rest", "diet", "exercise"]) and not any(f in line_content.upper() for f in ['MG', 'ML', 'MCG', 'TAB', 'CAP', 'SYRUP'])
+        is_lifestyle_advice = any(adv in line_cnt_l for adv in ["stop alcohol", "stop smoking", "smoking", "alcohol", "bed rest", "diet", "exercise"]) and not any(f in line_content.upper() for f in ['MG', 'ML', 'MCG', 'TAB', 'CAP', 'SYRUP'])
+        is_symptom_or_vital = any(sym in line_cnt_l for sym in ['edema', 'puffiness', 'swelling', 'dyspnea', 'facial', 'pedal', 'pitting', 'fever', 'cough', 'pain', 'headache', 'bp:', 'pulse:', 'temp:', 'spo2:']) and not any(f in line_content.upper() for f in ['TAB', 'CAP', 'SYRUP', 'INJ', 'POWDER'])
         is_med_start = any(line_content.upper().startswith(f) for f in rx_forms)
-        has_drug_marker = any(f in line_content.upper() for f in ['MG', 'ML', 'MCG', 'TAB', 'CAP', 'SYRUP', 'DROPS', 'INJ', 'POWDER', 'OINT'])
-        is_numbered_rx = (m_num is not None) and (not is_lifestyle_advice) and (len(line_content) >= 3) and any(c.isalpha() for c in line_content)
+        has_drug_marker = any(f in line_content.upper() for f in ['MG', 'ML', 'MCG', 'TAB', 'CAP', 'SYRUP', 'DROPS', 'INJ', 'POWDER', 'OINT']) and not (line_cnt_l in ['mg', 'ml', 'mcg', 'gm'])
+        is_numbered_rx = (m_num is not None) and (not is_lifestyle_advice) and (not is_symptom_or_vital) and (len(line_content) >= 3) and any(c.isalpha() for c in line_content) and not (line_cnt_l in ['mg', 'ml', 'mcg', 'gm'])
 
-        if not is_lifestyle_advice and (is_med_start or has_drug_marker or is_numbered_rx):
+        if not is_lifestyle_advice and not is_symptom_or_vital and (is_med_start or has_drug_marker or is_numbered_rx):
             if current:
                 prescriptions.append(current)
             current = {
@@ -697,7 +717,6 @@ def normalize_drugs(raw_text: str, structured_llm: Optional[Dict[str, Any]] = No
     Strictly filters out clinical stop-words and dosage/administration terms.
     """
     raw_lower = raw_text.lower()
-    # If the document is clearly pathology / biopsy / CBC lab report, do not fabricate prescriptions
     if any(k in raw_lower for k in ["histopathology", "biopsy", "microscopic examination", "gross examination", "reference range", "lipid profile", "complete blood count"]):
         return []
 
@@ -705,127 +724,108 @@ def normalize_drugs(raw_text: str, structured_llm: Optional[Dict[str, Any]] = No
     matched_results = []
     seen_drugs = set()
 
-    # Path A: Structured LLM output available
+    # ── Unified Medication Candidate Gathering (Vision + Deterministic OCR Fusion) ──
+    candidate_items = []
+    seen_candidate_words = set()
+
+    # 1. Primary: Candidates from Multimodal Vision-LLM
     if structured_llm and structured_llm.get("medications"):
         for m in structured_llm["medications"]:
             name = str(m.get("name", "")).strip()
-            gen = str(m.get("generic", "")).strip()
-            strength = str(m.get("strength", "")).strip()
-            dosage = str(m.get("dosage", "")).strip()
-            dur = str(m.get("duration", "")).strip()
-            instr = str(m.get("instructions", "")).strip()
-
             if not name or len(name) < 3:
                 continue
+            candidate_items.append(m)
+            clean_k = re.sub(r'^(?:TAB\.?|CAP\.?|SYRUP|INJ\.?)\s*', '', name, flags=re.IGNORECASE).lower().strip()
+            for w in re.findall(r'[a-zA-Z]{3,}', clean_k):
+                seen_candidate_words.add(w)
 
-            # 1. Primary: Query offline SQLite FTS5 Indian Drug Master DB
-            fts_match = query_drug_fts5(name, generic_hint=gen)
-            if fts_match:
-                matched_results.append({
-                    "drug": name,
-                    "generic": fts_match["generic_salts"],
-                    "strength": strength if strength else fts_match["strength"],
-                    "dosage": dosage,
-                    "duration": dur,
-                    "instructions": instr,
-                    "category": fts_match["category"],
-                    "raw_token": name,
-                    "status": "VERIFIED",
-                    "score": 98.0,
-                    "matched_lexicon": fts_match["brand_name"],
-                    "is_fdc": fts_match.get("is_fdc", False)
-                })
-                continue
+    # 2. Secondary: Extract and Fuse Candidates from Deterministic OCR parsing
+    ocr_items = parse_rx_deterministic(raw_text)
+    for item in ocr_items:
+        name = item.get("name", "").strip()
+        name_clean = re.sub(r'^(?:TAB\.?|CAP\.?|SYRUP|INJ\.?)\s*', '', name, flags=re.IGNORECASE).strip().lower()
+        words = [w for w in re.findall(r'[a-zA-Z]{3,}', name_clean)]
+        if not words or sum(c.isalpha() for c in name_clean) < 3:
+            continue
+        # Filter out isolated units, frequencies, or non-drug lines
+        if name_clean in ['mg', 'ml', 'mcg', 'gm', 'review', 'continue', 'powder', 'ip powder']:
+            continue
+        if any(s in name_clean for s in ['edema', 'puffiness', 'swelling', 'dyspnea', 'fever', 'cough', 'pain', 'headache', 'bp:', 'pulse:', 'temp:', 'spo2:']):
+            continue
+        # Check if already covered by an existing candidate word
+        if any(w in seen_candidate_words for w in words):
+            continue
+        candidate_items.append(item)
+        for w in words:
+            seen_candidate_words.add(w)
 
-            # Fallback to secondary RapidFuzz against lexicon_list
-            search_query = f"{name} {gen}".strip()
-            clean_query = re.sub(r'^(?:TAB\.?|CAP\.?|SYRUP|INJ\.?)\s*', '', search_query, flags=re.IGNORECASE).strip()
+    # 3. Process all unified candidates through 2-Tier Indian Drug Verification (SQLite FTS5 + RapidFuzz)
+    for item in candidate_items:
+        name = item.get("name", "").strip()
+        gen = item.get("generic", "").strip()
+        strength = item.get("strength", "").strip()
+        dosage = item.get("dosage", "").strip()
+        dur = item.get("duration", "").strip()
+        instr = item.get("instructions", "").strip()
 
-            best_match = None
-            best_score = 0.0
+        if not name or len(name) < 3:
+            continue
 
-            if process and fuzz:
-                match_result = process.extractOne(clean_query, lexicon_list, scorer=fuzz.WRatio, processor=lambda s: s.lower())
-                if match_result:
-                    best_match = match_result[0]
-                    best_score = float(match_result[1])
-
-            is_verified = best_match and best_score >= 75.0
-            meta = lexicon_map.get(best_match.lower(), {}) if (best_match and is_verified) else {}
-
-            final_generic = gen if gen else meta.get("generic_name", "Unverified Formulation")
-            final_strength = strength if strength else meta.get("strength", "")
-
+        # 1. Primary: Query offline SQLite FTS5 Indian Drug Master DB
+        fts_match = query_drug_fts5(name, generic_hint=gen)
+        if fts_match:
             matched_results.append({
                 "drug": name,
-                "generic": final_generic,
-                "strength": final_strength,
+                "generic": fts_match["generic_salts"],
+                "strength": strength if strength else fts_match["strength"],
                 "dosage": dosage,
                 "duration": dur,
                 "instructions": instr,
-                "category": meta.get("category", "Prescribed Medication"),
+                "category": fts_match["category"],
                 "raw_token": name,
-                "status": "VERIFIED" if is_verified else "FLAGGED_FOR_DOCTOR",
-                "score": round(best_score, 1),
-                "matched_lexicon": best_match if is_verified else None
+                "status": "VERIFIED",
+                "score": 98.0,
+                "matched_lexicon": fts_match["brand_name"],
+                "is_fdc": fts_match.get("is_fdc", False)
             })
+            continue
+
+        # Fallback to secondary RapidFuzz against lexicon_list
+        search_query = f"{name} {gen}".strip()
+        clean_query = re.sub(r'^(?:TAB\.?|CAP\.?|SYRUP|INJ\.?)\s*', '', search_query, flags=re.IGNORECASE).strip()
+
+        best_match = None
+        best_score = 0.0
+        if process and fuzz:
+            match_result = process.extractOne(clean_query, lexicon_list, scorer=fuzz.WRatio, processor=lambda s: s.lower())
+            if match_result:
+                best_match = match_result[0]
+                best_score = float(match_result[1])
+
+        is_verified = best_match and best_score >= 75.0
+        meta = lexicon_map.get(best_match.lower(), {}) if (best_match and is_verified) else {}
+
+        final_generic = gen if gen else meta.get("generic_name", "Unverified Formulation")
+        final_strength = strength if strength else meta.get("strength", "")
+
+        matched_results.append({
+            "drug": name,
+            "generic": final_generic,
+            "strength": final_strength,
+            "dosage": dosage,
+            "duration": dur,
+            "instructions": instr,
+            "category": meta.get("category", "Prescribed Medication"),
+            "raw_token": name,
+            "status": "VERIFIED" if is_verified else "FLAGGED_FOR_DOCTOR",
+            "score": round(best_score, 1),
+            "matched_lexicon": best_match if is_verified else None
+        })
+
+    if matched_results:
         return consolidate_fdc_medications(matched_results)
 
-    # Path B: Deterministic prescription parser
-    parsed_items = parse_rx_deterministic(raw_text)
-    if parsed_items:
-        for item in parsed_items:
-            name = item.get("name", "").strip()
-            gen = item.get("generic", "").strip()
-
-            # 1. Primary: Query offline SQLite FTS5 Indian Drug Master DB
-            fts_match = query_drug_fts5(name, generic_hint=gen)
-            if fts_match:
-                matched_results.append({
-                    "drug": name,
-                    "generic": fts_match["generic_salts"],
-                    "strength": item.get("strength") or fts_match["strength"],
-                    "dosage": item.get("dosage", ""),
-                    "duration": item.get("duration", ""),
-                    "instructions": item.get("instructions", ""),
-                    "category": fts_match["category"],
-                    "raw_token": name,
-                    "status": "VERIFIED",
-                    "score": 98.0,
-                    "matched_lexicon": fts_match["brand_name"],
-                    "is_fdc": fts_match.get("is_fdc", False)
-                })
-                continue
-
-            # Fallback to secondary RapidFuzz against lexicon_list
-            search_query = f"{name} {gen}".strip()
-            clean_query = re.sub(r'^(?:TAB\.?|CAP\.?|SYRUP|INJ\.?)\s*', '', search_query, flags=re.IGNORECASE).strip()
-
-            best_match = None
-            best_score = 0.0
-            if process and fuzz:
-                match_result = process.extractOne(clean_query, lexicon_list, scorer=fuzz.WRatio, processor=lambda s: s.lower())
-                if match_result:
-                    best_match = match_result[0]
-                    best_score = float(match_result[1])
-
-            is_verified = best_match and best_score >= 75.0
-            meta = lexicon_map.get(best_match.lower(), {}) if (best_match and is_verified) else {}
-
-            matched_results.append({
-                "drug": name,
-                "generic": gen if gen else meta.get("generic_name", "Unverified Formulation"),
-                "strength": item.get("strength") or meta.get("strength", ""),
-                "dosage": item.get("dosage", ""),
-                "duration": item.get("duration", ""),
-                "instructions": item.get("instructions", ""),
-                "category": meta.get("category", "Prescribed Medication"),
-                "raw_token": name,
-                "status": "VERIFIED" if is_verified else "FLAGGED_FOR_DOCTOR",
-                "score": round(best_score, 1),
-                "matched_lexicon": best_match if is_verified else None
-            })
-        return consolidate_fdc_medications(matched_results)
+    # Path C: Fallback token scanner with strict dosage/admin stopword filterings)
 
     # Path C: Fallback token scanner with strict dosage/admin stopword filtering
     lines = [l.strip() for l in raw_text.split('\n') if l.strip()]
@@ -945,6 +945,25 @@ def analyze_prescription(image_input, file_url: str = "") -> Dict[str, Any]:
 
     # 3. Normalize and verify medications against 246,143 drug SQLite FTS5 database
     drugs = normalize_drugs(ocr_text, structured_llm=structured_llm)
+
+    # Defense-in-depth: Reclassify as Laboratory Report if 0 drugs found and lab keywords are present
+    combined_doc_text = (ocr_text + " " + ((structured_llm.get("transcription") or "") if structured_llm else "")).lower()
+    LAB_KEYWORDS = [
+        "haematology", "hematology", "complete blood count", "cbc", "lipid profile",
+        "liver function", "kidney function", "kft", "lft", "urine routine",
+        "differential leucocyte", "differential leukocyte", "hemoglobin", "total leukocyte",
+        "platelet count", "rbc count", "hematocrit", "mcv", "mch", "mchc", "serum creatinine",
+        "blood urea", "uric acid", "total bilirubin", "sgot", "sgpt", "fasting blood sugar",
+        "hba1c", "biological ref", "reference interval", "observed value", "test name", "labsmart"
+    ]
+    lab_matches = sum(1 for k in LAB_KEYWORDS if k in combined_doc_text)
+    if len(drugs) == 0 and lab_matches >= 2:
+        try:
+            from perception.lab import analyze_lab_report
+            print(f"🔬 Reclassifying document from Prescription to Laboratory Report ({lab_matches} lab keywords detected)...")
+            return analyze_lab_report(image_input, file_url=file_url)
+        except Exception as le:
+            print(f"Lab routing fallback note: {le}")
 
     # 4. Extract doctor, clinic, complaints, and dates
     doc_name = ""

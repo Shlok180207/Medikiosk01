@@ -10,10 +10,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import uvicorn
 from typing import List, Optional
-import os, uuid, json, re, io, tempfile, base64, hashlib
+import os, uuid, json, re, io, tempfile, base64, hashlib, threading
 from gtts import gTTS
 from datetime import datetime
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text, text
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text, text, event
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.ext.declarative import declarative_base
 from dotenv import load_dotenv
@@ -487,15 +487,15 @@ PATIENT_JSON_TEMPLATE = """{
   "is_emergency": false,
   "severity": "Low|Medium|High",
   "duration": "Symptom duration (e.g. '2 days')",
-  "past_medical_history": "Past medical conditions (or 'Uncertain / unconfirmed (patient does not recall)' if unsure, or 'Patient denies past chronic medical conditions / No significant past medical history' if denied)",
-  "family_history": "Family history (or 'Patient denies family history of similar complaints / No significant family history' if denied, or 'Uncertain / unconfirmed' if unsure)",
-  "personal_history": "Smoking, alcohol, diet, habits (or 'No significant lifestyle or habit risks reported')",
+  "past_medical_history": "Past chronic conditions (e.g. 'History of hypertension, type 2 diabetes' or 'Patient denies past chronic medical conditions / No significant past medical history')",
+  "family_history": "Family history (e.g. 'Patient denies family history of similar complaints / No significant family history' if denied, or 'Uncertain / unconfirmed' if unsure)",
+  "personal_history": "Lifestyle ONLY: smoking, tobacco, alcohol, diet, habits (STRICTLY do NOT include medical illnesses like hypertension/diabetes here)",
   "allergies": "Drug/food allergies (or 'No known drug or food allergies (NKDA)' if denied)",
-  "review_of_systems": "Summary of systemic positive and negative symptoms (e.g. 'Patient reports diaphoresis; denies fever or vomiting')",
+  "review_of_systems": "Summary of systemic positive and negative findings from transcript (MUST NOT contradict reported complaints, e.g. never deny dyspnea if patient reports shortness of breath)",
   "clinical_impression": {
     "clinical_synthesis": [
-      "Key acute symptoms, duration, and anatomical localization reported today",
-      "Corroborating objective findings from today's uploaded reports/labs (or 'No acute lab flags reported')",
+      "Key acute symptoms, duration, severity, and anatomical localization reported today",
+      "Corroborating objective findings from today's uploaded reports/prescriptions/labs (summarize key medications found on uploaded prescription slips, imaging findings, or lab abnormalities; or 'No documents uploaded today')",
       "Historical ABHA risk context and underlying clinical etiology rationale"
     ],
     "probable_diagnoses": [
@@ -588,7 +588,16 @@ class DocumentExtraction(BaseModel):
 
 # ── Database ──
 SQLALCHEMY_DATABASE_URL = "sqlite:///./medikiosk_v2.db"
-engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
+engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False, "timeout": 15})
+
+@event.listens_for(engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA busy_timeout=15000")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.close()
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -1075,6 +1084,7 @@ _HPI_FILTER_RE = re.compile('|'.join([
     r'\b(?:denies\s+(?:any\s+)?past\s+(?:chronic\s+)?(?:medical|illness|conditions?))\b',
     r'\b(?:no\s+significant\s+past\s+medical)\b',
     r'\b(?:reports?\s+no\s+past\s+(?:medical|chronic))\b',
+    r'\b(?:(?:has\s+a\s+)?history\s+of\s+(?:hypertension|diabetes|high\s+blood\s+pressure|cardiac|heart|cad|asthma|copd|cholesterol|thyroid))\b',
     # Family history mentions / denials
     r'\b(?:family\s+history|hereditary\s+conditions?|family\s+members?\s+(?:have|had))\b',
     r'\b(?:denies\s+(?:any\s+)?(?:significant\s+)?family\s+history)\b',
@@ -1117,6 +1127,23 @@ def clean_hpi_text(hpi: str) -> str:
 
     cleaned_result = "\n".join(cleaned_lines).strip()
     return cleaned_result if cleaned_result else hpi
+
+
+_PERSONAL_MED_LEAK_RE = re.compile(
+    r'\b(?:(?:,\s*)?(?:and\s+)?(?:a\s+)?(?:history\s+of|diagnosed\s+with|known\s+case\s+of|known\s+history\s+of|suffers?\s+from)\s+[^.]*(?:hypertension|blood\s+pressure|diabetes|type\s+2|cad|heart\s+disease|asthma|copd)[^.]*)\b',
+    re.IGNORECASE
+)
+
+def clean_personal_history_text(text: str) -> str:
+    """Cleans personal/lifestyle history by stripping out leaked chronic medical diagnoses."""
+    if not text or not isinstance(text, str):
+        return text or "None reported"
+    cleaned = _PERSONAL_MED_LEAK_RE.sub("", text)
+    cleaned = re.sub(r'\s{2,}', ' ', cleaned)
+    cleaned = re.sub(r'\s+([.,])', r'\1', cleaned).strip().rstrip('.,').strip()
+    if cleaned and not cleaned.endswith('.'):
+        cleaned += '.'
+    return cleaned if cleaned and len(cleaned) > 3 else "No significant lifestyle or habit risks reported."
 
 
 # ── Instant Patient Builder (0ms LLM Overhead) ──
@@ -1276,12 +1303,20 @@ SECTION SPECIFIC RULES:
    - When patient expresses UNCERTAINTY / LACK OF MEMORY: Record as "Uncertain / unconfirmed (patient does not recall / unsure)". DO NOT write "No" or "Denies"!
    - When NOT asked: Record as "Not assessed".
 
-3. REVIEW OF SYSTEMS (ROS):
-   - Actively summarize associated systemic symptoms asked or reported during the interview (e.g. "Patient denies fever, vomiting, or dyspnea; reports diaphoresis").
+3. REVIEW OF SYSTEMS (ROS) & ABSOLUTE NO CONTRADICTIONS:
+   - Actively summarize associated systemic symptoms reported or asked in the transcript.
+   - ABSOLUTE CLINICAL RULE: NEVER deny a symptom that the patient actually has. For example, if the patient reports shortness of breath or dyspnea, you MUST NEVER write "denies dyspnea".
 
-4. CLINICAL DECISION SUPPORT (CDSS) & DIAGNOSTIC IMPRESSION:
+4. PERSONAL / LIFESTYLE HISTORY VS PAST MEDICAL HISTORY:
+   - `personal_history`: ONLY smoking, tobacco, alcohol, diet, habits, and physical activity. DO NOT put medical illnesses like hypertension, diabetes, or CAD here.
+   - `past_medical_history`: Document chronic illnesses (hypertension, diabetes, CAD, etc.) here. If the patient mentions hypertension or diabetes, place them strictly in `past_medical_history`.
+
+5. CLINICAL DECISION SUPPORT (CDSS) & DIAGNOSTIC IMPRESSION:
    - `clinical_impression`:
-     * `clinical_synthesis`: Array of 2-3 concise bullet points: (1) Current acute presentation/timeline, (2) Corroborating lab/imaging findings, (3) Relevant historical ABHA context & primary clinical etiology rationale.
+     * `clinical_synthesis`: Array of 2-3 concise bullet points:
+       - Point 1: Current acute presentation, duration, severity, and anatomical localization reported today.
+       - Point 2: Objective corroboration from today's uploaded documents (Tier 2): If prescriptions or documents are present in Tier 2, you MUST explicitly summarize the medications identified on uploaded slips (e.g. 'Uploaded prescriptions confirm active therapy with Atorvastatin, Clopidogrel...'), imaging findings, or lab abnormalities. NEVER say 'No acute lab flags reported' if documents or prescriptions are present! If Tier 2 has no documents, state 'No documents uploaded today'.
+       - Point 3: Relevant historical ABHA context & underlying clinical etiology rationale.
      * `probable_diagnoses`: Top 2-3 differentials with `condition`, `likelihood` ("High"|"Medium"|"Low"), and `supporting_evidence`.
      * `suggested_investigations`: 2-4 recommended next diagnostic tests/scans.
      * `critical_rule_outs`: 1-3 high-risk life-threatening conditions to actively exclude.
@@ -1309,7 +1344,7 @@ Output ONLY valid JSON:
         patient.duration = ext.duration or "Unknown"
         patient.past_medical_history = ext.past_medical_history or "No significant past medical history"
         patient.family_history = ext.family_history or "No significant family history"
-        patient.personal_history = ext.personal_history or "No significant lifestyle risks"
+        patient.personal_history = clean_personal_history_text(ext.personal_history or patient.personal_history or "No significant lifestyle risks")
         patient.allergies = ext.allergies or "No known drug allergies (NKDA)"
         patient.review_of_systems = ext.review_of_systems or "Patient denies associated systemic symptoms"
         if ext.clinical_impression and isinstance(ext.clinical_impression, dict):
@@ -1761,33 +1796,39 @@ def detect_visual_modality(image_bytes: bytes, filename: str = "") -> tuple[str,
         s_c = s[30:120, 30:120]
         v_c = v[30:120, 30:120]
 
-        center_white_paper_ratio = float(np.mean((s_c < 45) & (v_c > 140)))
+        # 1. True Paper Document Feature:
+        # Real printed prescriptions / lab slips feature high-brightness pure white paper backgrounds (v > 215, s < 35).
+        # This covers > 40% of the document canvas (unlike radiographs where bones/cardiac shadow are mid-tone gray).
+        pure_white_center = float(np.mean((s_c < 35) & (v_c > 215)))
+        pure_white_overall = float(np.mean((s < 35) & (v > 215)))
 
-        # 1. ECG Pink/Salmon grid: Real ECG paper has calibrated millimetric pink grid lines
-        # across the paper body itself (not on background wooden desk borders).
-        # Specifically: Hue in [230..255] (pink/magenta) or [0..12] (bright red/salmon),
-        # Saturation >= 45, Brightness >= 130 (NOT dark wood desks which have V < 130 and S in 30..90)
-        ecg_center_mask = ((h_c >= 230) | (h_c <= 12)) & (s_c >= 45) & (s_c <= 200) & (v_c >= 130)
+        # 2. Radiographic Continuous Mid-Tone Gradients:
+        # Radiographs (X-rays, CTs) represent tissue attenuation maps with continuous grayscale midtones (40 <= v <= 205).
+        mid_tone_center = float(np.mean((v_c >= 40) & (v_c <= 205)))
+        mid_tone_overall = float(np.mean((v >= 40) & (v <= 205)))
+
+        # 3. ECG Pink/Salmon grid: Real ECG paper has calibrated millimetric pink grid lines
+        # across the paper body itself. Hue in [230..255] or [0..15], S in [25..200], V >= 110
+        ecg_center_mask = ((h_c >= 230) | (h_c <= 15)) & (s_c >= 25) & (s_c <= 200) & (v_c >= 110)
         ecg_center_ratio = float(np.mean(ecg_center_mask))
 
-        # 2. Histopathology H&E violet/purple/magenta stain: Hue in [175..235], Saturation > 35, Brightness > 60
+        # 4. Histopathology H&E violet/purple/magenta stain: Hue in [175..235], Saturation > 35, Brightness > 60
         pathology_mask = (h_c >= 175) & (h_c <= 235) & (s_c >= 35) & (v_c >= 60)
         pathology_ratio = float(np.mean(pathology_mask))
 
-        # 3. Endoscopy / Mucosal / Dermoscopy warm tones: Hue in [0..30] or [240..255], Saturation > 45
+        # 5. Endoscopy / Mucosal / Dermoscopy warm tones: Hue in [0..30] or [240..255], Saturation > 45
         endoscopy_mask = ((h_c <= 30) | (h_c >= 240)) & (s_c >= 45)
         endoscopy_ratio = float(np.mean(endoscopy_mask))
 
-        # 4. Radiograph Blue/Cyan tint (common Kodak/digital monitor tint): Hue in [130..180], Saturation > 20
+        # 6. Radiograph Blue/Cyan tint (common Kodak/digital monitor tint): Hue in [130..180], Saturation > 20
         blue_cyan_mask = (h >= 130) & (h <= 180) & (s >= 20)
         blue_cyan_ratio = float(np.mean(blue_cyan_mask))
 
-        # White paper document suppression: if center is predominantly white paper (>35%), it is ALWAYS a document/prescription
+        is_monochrome = (mean_s < 25) or (blue_cyan_ratio > 0.30)
         img_aspect = float(img.width) / max(float(img.height), 1.0)
-        if center_white_paper_ratio > 0.35:
-            modality = "document"
-            prompt = doc_prompt
-        elif ecg_center_ratio > 0.15 and center_white_paper_ratio < 0.30 and img_aspect >= 0.9:
+
+        # Modality Decision Engine:
+        if ecg_center_ratio > 0.10 and pure_white_center < 0.40:
             modality = "ecg"
             prompt = ecg_prompt
         elif pathology_ratio > 0.20:
@@ -1796,7 +1837,13 @@ def detect_visual_modality(image_bytes: bytes, filename: str = "") -> tuple[str,
         elif endoscopy_ratio > 0.30 and mean_s > 40:
             modality = "endoscopy"
             prompt = endoscopy_prompt
-        elif ((mean_s < 30) or (blue_cyan_ratio > 0.30)) and (mean_v < 175 or dark_pixel_ratio > 0.15) and (bright_pixel_ratio < 0.55):
+        # Radiology (Chest X-Ray, Bone Radiograph, CT):
+        # Grayscale or PACS-blue tint with continuous tissue midtone gradients, NOT pure white printed paper
+        elif is_monochrome and mid_tone_center > 0.35 and pure_white_center < 0.35:
+            modality = "radiology"
+            prompt = radiology_prompt
+        # Dark-background radiograph (traditional film X-ray with black air field)
+        elif is_monochrome and (mean_v < 135 or dark_pixel_ratio > 0.20) and pure_white_center < 0.25:
             modality = "radiology"
             prompt = radiology_prompt
         else:
@@ -2162,16 +2209,13 @@ def enforce_clinical_safety_guardrail(data: dict, raw_text: str) -> dict:
     return data
 
 
+doc_save_lock = threading.Lock()
+
 def process_document_background(file_bytes: bytes, filename: str, content_type: str, file_url: str, patient_id_db: int):
-    db = SessionLocal()
+    structured_data = None
+    extracted_text = ""
+    detected_modality = "document"
     try:
-        patient = db.query(PatientRecord).filter(PatientRecord.id == patient_id_db).first()
-        if not patient:
-            return
-            
-        structured_data = None
-        extracted_text = ""
-        detected_modality = "document"
         try:
             if filename.lower().endswith('.pdf') or content_type == 'application/pdf':
                 import fitz
@@ -2268,10 +2312,43 @@ def process_document_background(file_bytes: bytes, filename: str, content_type: 
                     ecg_res = analyze_ecg(file_bytes, file_url=file_url)
                     structured_data = ecg_res.get("dashboard_payload", {})
                 else:
-                    # Prescriptions, doctor consultation slips, and general documents
-                    print("📄 Executing Sauvola Preprocessing + Dual OCR + RapidFuzz Drug Matcher on CPU...")
-                    presc_res = analyze_prescription(file_bytes, file_url=file_url)
-                    structured_data = presc_res.get("dashboard_payload", {})
+                    # Check if document is a Laboratory Report vs Prescription
+                    from perception.router import classify_image_modality
+                    from perception.prescription import preprocess_prescription, run_ocr
+                    from perception.lab import analyze_lab_report
+
+                    router_info = classify_image_modality(file_bytes)
+                    is_printed = router_info.get("modality") == "PRINTED_REPORT"
+
+                    fn_lower = (filename or "").lower()
+                    is_lab_fn = any(k in fn_lower for k in [
+                        "lab", "cbc", "haematology", "hematology", "blood", "kft", "lft",
+                        "urine", "lipid", "patholog", "biochem", "test_report", "sample"
+                    ])
+
+                    # Fast check on document text for laboratory keywords
+                    contrast_gray, binarized = preprocess_prescription(file_bytes)
+                    quick_ocr = run_ocr(contrast_gray, binarized).lower()
+
+                    LAB_KEYWORDS = [
+                        "haematology", "hematology", "complete blood count", "cbc", "lipid profile",
+                        "liver function", "kidney function", "kft", "lft", "urine routine",
+                        "differential leucocyte", "differential leukocyte", "hemoglobin", "total leukocyte",
+                        "platelet count", "rbc count", "hematocrit", "mcv", "mch", "mchc", "serum creatinine",
+                        "blood urea", "uric acid", "total bilirubin", "sgot", "sgpt", "fasting blood sugar",
+                        "hba1c", "biological ref", "reference interval", "observed value", "test name", "labsmart"
+                    ]
+                    lab_kw_count = sum(1 for k in LAB_KEYWORDS if k in quick_ocr)
+
+                    if is_lab_fn or (is_printed and lab_kw_count >= 1) or lab_kw_count >= 2:
+                        print(f"🔬 Executing Tabular Laboratory Perception Engine ({lab_kw_count} lab keywords detected)...")
+                        lab_res = analyze_lab_report(file_bytes, file_url=file_url, filename=filename)
+                        structured_data = lab_res.get("dashboard_payload", {})
+                    else:
+                        # Prescriptions, doctor consultation slips, and general documents
+                        print("📄 Executing Sauvola Preprocessing + Dual OCR + RapidFuzz Drug Matcher on CPU...")
+                        presc_res = analyze_prescription(file_bytes, file_url=file_url)
+                        structured_data = presc_res.get("dashboard_payload", {})
 
             print(f"✅ Background CPU Perception Complete [{structured_data.get('modality')}]: {structured_data.get('document_type')} - {structured_data.get('summary', '')[:80]}")
         except Exception as e:
@@ -2290,19 +2367,36 @@ def process_document_background(file_bytes: bytes, filename: str, content_type: 
                 "raw_text": extracted_text
             }
 
-        existing = []
-        if patient.flagged_lab_values and patient.flagged_lab_values != "[]":
+        with doc_save_lock:
+            db_save = SessionLocal()
             try:
-                parsed = json.loads(patient.flagged_lab_values)
-                if isinstance(parsed, list):
-                    existing = [i for i in parsed if isinstance(i, dict)]
-            except:
-                pass
-        existing.append(structured_data)
-        patient.flagged_lab_values = json.dumps(existing)
-        db.commit()
-    finally:
-        db.close()
+                p_fresh = db_save.query(PatientRecord).filter(PatientRecord.id == patient_id_db).first()
+                if p_fresh:
+                    existing = []
+                    if p_fresh.flagged_lab_values and p_fresh.flagged_lab_values != "[]":
+                        try:
+                            parsed = json.loads(p_fresh.flagged_lab_values)
+                            if isinstance(parsed, list):
+                                existing = [i for i in parsed if isinstance(i, dict)]
+                        except Exception:
+                            pass
+                    
+                    # Deduplicate based on file_url or matching document_type + summary
+                    target_url = structured_data.get("file_url")
+                    is_dup = any(
+                        (target_url and d.get("file_url") == target_url) or
+                        (d.get("summary") == structured_data.get("summary") and d.get("document_type") == structured_data.get("document_type"))
+                        for d in existing
+                    )
+                    if not is_dup:
+                        existing.append(structured_data)
+                        p_fresh.flagged_lab_values = json.dumps(existing)
+                        db_save.commit()
+                        print(f"📄 Successfully saved document [{structured_data.get('document_type')}]. Patient {p_fresh.patient_id} now has {len(existing)} documents.")
+            finally:
+                db_save.close()
+    except Exception as outer_e:
+        print(f"Error in process_document_background: {outer_e}")
 
 
 # ── Document Processing ──
@@ -2386,10 +2480,7 @@ async def finalize_intake(
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
     
-    # Skip redundant synthesis if follow-up completion already triggered it (saves ~15-25s GPU time)
-    if patient.is_synthesized:
-        return {"status": "success", "message": "Synthesis already complete — skipping redundant call"}
-    
+    # Trigger comprehensive synthesis with all documents
     background_tasks.add_task(synthesize_and_filter_patient_background, patient.id, patient.abha_id, language, is_ayush)
     return {"status": "success", "message": "Comprehensive synthesis (dialogue + documents) queued"}
 
@@ -2417,8 +2508,12 @@ async def resynthesize_patient(
 
 # ── Red Flag Check ──
 @app.get("/api/red-flag-check")
-async def red_flag_check(patient_id: str, db: Session = Depends(get_db)):
-    patient = db.query(PatientRecord).filter(PatientRecord.patient_id == patient_id).first()
+def red_flag_check(patient_id: Optional[str] = None, db: Session = Depends(get_db)):
+    patient = None
+    if patient_id and patient_id.lower() not in ("null", "undefined", "none", ""):
+        patient = db.query(PatientRecord).filter(PatientRecord.patient_id == patient_id).first()
+    if not patient:
+        patient = db.query(PatientRecord).order_by(PatientRecord.id.desc()).first()
     if not patient:
         return {"has_red_flags": False, "flags": [], "message": "Patient not found"}
 
@@ -2461,10 +2556,14 @@ async def red_flag_check(patient_id: str, db: Session = Depends(get_db)):
 
 # ── Specialty Matching ──
 @app.get("/api/specialty-match")
-async def specialty_match(patient_id: str, language: str = "English", db: Session = Depends(get_db)):
-    patient = db.query(PatientRecord).filter(PatientRecord.patient_id == patient_id).first()
+def specialty_match(patient_id: Optional[str] = None, language: str = "English", db: Session = Depends(get_db)):
+    patient = None
+    if patient_id and patient_id.lower() not in ("null", "undefined", "none", ""):
+        patient = db.query(PatientRecord).filter(PatientRecord.patient_id == patient_id).first()
     if not patient:
-        return {"specialty": "General Medicine", "reason": "Default", "confidence": "Low"}
+        patient = db.query(PatientRecord).order_by(PatientRecord.id.desc()).first()
+    if not patient:
+        return {"specialty": "General Medicine", "reason": "Default recommendation", "confidence": "Low"}
 
     if patient.is_ayush:
         return {
@@ -2473,12 +2572,63 @@ async def specialty_match(patient_id: str, language: str = "English", db: Sessio
             "confidence": "High"
         }
 
-    cat = patient.symptom_category or detect_symptom_category(f"{patient.chief_complaint or ''} {patient.hpi or ''}")
-    
+    # 1. Clinical Impression Check (if already synthesized)
+    if patient.clinical_impression_json:
+        ci_str = patient.clinical_impression_json.lower()
+        if any(w in ci_str for w in ["coronary", "angina", "myocardial", "infarction", "cardiac", "arrhythmia", "stemi", "nstemi", "acs", "ischemic heart"]):
+            return {
+                "specialty": "Cardiology",
+                "reason": "Acute coronary syndrome / cardiovascular etiology identified in clinical impression",
+                "confidence": "High"
+            }
+        if any(w in ci_str for w in ["gastritis", "gerd", "peptic", "ulcer", "cholecystitis", "appendicitis", "hepatitis", "pancreatitis"]):
+            return {
+                "specialty": "Gastroenterology",
+                "reason": "Abdominal / gastrointestinal disease process indicated in clinical evaluation",
+                "confidence": "High"
+            }
+        if any(w in ci_str for w in ["stroke", "tia", "migraine", "neuropathy", "cranial", "seizure"]):
+            return {
+                "specialty": "Neurology",
+                "reason": "Neurological / cranial evaluation indicated",
+                "confidence": "High"
+            }
+        if any(w in ci_str for w in ["pneumonia", "copd", "asthma", "bronchitis", "respiratory", "pleural", "pulmonary"]):
+            return {
+                "specialty": "Pulmonology",
+                "reason": "Acute pulmonary / respiratory condition indicated",
+                "confidence": "High"
+            }
+        if any(w in ci_str for w in ["fracture", "osteoarthritis", "arthritis", "spondylosis", "ligament", "dislocation"]):
+            return {
+                "specialty": "Orthopedics",
+                "reason": "Musculoskeletal / bone & joint disorder identified",
+                "confidence": "High"
+            }
+
+    # 2. Uploaded Documents Check (ECG, Prescriptions, Radiology)
+    if patient.flagged_lab_values and patient.flagged_lab_values != "[]":
+        docs_str = patient.flagged_lab_values.lower()
+        if any(w in docs_str for w in ["ecg", "troponin", "atorvastatin", "clopidogrel", "sorbitrate", "metoprolol", "cardiac"]):
+            return {
+                "specialty": "Cardiology",
+                "reason": "Cardiovascular markers and cardiac findings on uploaded medical documents",
+                "confidence": "High"
+            }
+        if any(w in docs_str for w in ["x-ray chest", "chest x-ray", "infiltrate", "pneumothorax", "consolidation"]):
+            return {
+                "specialty": "Pulmonology",
+                "reason": "Thoracic imaging findings on uploaded records",
+                "confidence": "High"
+            }
+
+    # 3. Clinical Symptoms & Transcript Text Analysis
+    full_text = f"{patient.chief_complaint or ''} {patient.hpi or ''} {patient.raw_dialogue or ''}".lower()
+
     specialty_map = {
         "chest_pain": {
             "specialty": "Cardiology",
-            "reason": "Evaluation of acute chest discomfort and cardiovascular parameters",
+            "reason": "Evaluation of acute chest discomfort, radiating pain, and cardiovascular parameters",
             "confidence": "High"
         },
         "stomach_pain": {
@@ -2503,8 +2653,30 @@ async def specialty_match(patient_id: str, language: str = "English", db: Sessio
         }
     }
 
-    if cat in specialty_map:
-        return specialty_map[cat]
+    # Check explicit non-general symptom category
+    if patient.symptom_category and patient.symptom_category in specialty_map and patient.symptom_category != "general":
+        return specialty_map[patient.symptom_category]
+
+    # Detect category from full clinical transcript
+    detected = detect_symptom_category(full_text)
+    if detected in specialty_map and detected != "general":
+        return specialty_map[detected]
+
+    # Additional high-precision clinical cues in spoken transcript
+    if any(w in full_text for w in ["chest", "heart", "chhati", "angina", "cardiac", "palpitation", "left arm", "jaw pain", "cold sweat"]):
+        return specialty_map["chest_pain"]
+    if any(w in full_text for w in ["stomach", "pet", "abdomen", "abdominal", "acidity", "vomit", "dast", "loose motion"]):
+        return specialty_map["stomach_pain"]
+    if any(w in full_text for w in ["headache", "sar dard", "sir", "migraine", "dizziness", "chakkar"]):
+        return specialty_map["headache"]
+    if any(w in full_text for w in ["joint", "knee", "ghutne", "jod", "bone", "back pain", "kamar", "swelling"]):
+        return specialty_map["joint_pain"]
+    if any(w in full_text for w in ["cough", "khansi", "saans", "breath", "wheez", "asthma"]):
+        return {
+            "specialty": "Pulmonology",
+            "reason": "Respiratory evaluation and airway assessment",
+            "confidence": "High"
+        }
 
     return {
         "specialty": "General Medicine",
@@ -2515,7 +2687,7 @@ async def specialty_match(patient_id: str, language: str = "English", db: Sessio
 
 # ── Patient Queue ──
 @app.get("/api/patients")
-async def get_patients(db: Session = Depends(get_db)):
+def get_patients(db: Session = Depends(get_db)):
     patients = db.query(PatientRecord).order_by(PatientRecord.id.desc()).all()
     return [{
         "patient_id": p.patient_id,
@@ -2529,7 +2701,7 @@ async def get_patients(db: Session = Depends(get_db)):
     } for p in patients]
 
 @app.delete("/api/patients/{patient_id}")
-async def delete_patient(patient_id: str, db: Session = Depends(get_db)):
+def delete_patient(patient_id: str, db: Session = Depends(get_db)):
     patient = db.query(PatientRecord).filter(PatientRecord.patient_id == patient_id).first()
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
@@ -2541,8 +2713,9 @@ async def delete_patient(patient_id: str, db: Session = Depends(get_db)):
 
 # ── Patient Summary ──
 @app.get("/api/patient-summary")
-async def get_patient_summary(patient_id: Optional[str] = None, db: Session = Depends(get_db)):
-    if patient_id:
+def get_patient_summary(patient_id: Optional[str] = None, db: Session = Depends(get_db)):
+    patient = None
+    if patient_id and patient_id.lower() not in ("null", "undefined", "none", ""):
         patient = db.query(PatientRecord).filter(PatientRecord.patient_id == patient_id).first()
     else:
         patient = db.query(PatientRecord).order_by(PatientRecord.id.desc()).first()
@@ -2550,10 +2723,17 @@ async def get_patient_summary(patient_id: Optional[str] = None, db: Session = De
     if not patient:
         return {"status": "No patients yet"}
 
-    # Auto-clean and persist HPI if it contains redundant cross-section leakage
+    # Auto-clean and persist HPI and personal history if they contain redundant cross-section leakage
     cleaned_hpi = clean_hpi_text(patient.hpi) if patient.hpi else "None reported"
+    cleaned_personal = clean_personal_history_text(patient.personal_history) if patient.personal_history else "None reported"
+    dirty = False
     if patient.hpi and cleaned_hpi != patient.hpi:
         patient.hpi = cleaned_hpi
+        dirty = True
+    if patient.personal_history and cleaned_personal != patient.personal_history:
+        patient.personal_history = cleaned_personal
+        dirty = True
+    if dirty:
         try:
             db.commit()
         except Exception:
@@ -2599,7 +2779,7 @@ async def get_patient_summary(patient_id: Optional[str] = None, db: Session = De
         "duration": patient.duration or "Unknown",
         "past_medical_history": patient.past_medical_history or "None reported",
         "family_history": patient.family_history or "None reported",
-        "personal_history": patient.personal_history or "None reported",
+        "personal_history": cleaned_personal,
         "allergies": patient.allergies or "None reported",
         "review_of_systems": patient.review_of_systems or "None reported",
         "clinical_impression": impression,
@@ -2614,9 +2794,13 @@ async def get_patient_summary(patient_id: Optional[str] = None, db: Session = De
 
 # ── Patient History (ABHA-linked past visits) ──
 @app.get("/api/patient-history")
-async def get_patient_history(patient_id: str, db: Session = Depends(get_db)):
+def get_patient_history(patient_id: Optional[str] = None, db: Session = Depends(get_db)):
     """Returns past visit history strictly for this patient's linked ABHA profile."""
-    patient = db.query(PatientRecord).filter(PatientRecord.patient_id == patient_id).first()
+    patient = None
+    if patient_id and patient_id.lower() not in ("null", "undefined", "none", ""):
+        patient = db.query(PatientRecord).filter(PatientRecord.patient_id == patient_id).first()
+    else:
+        patient = db.query(PatientRecord).order_by(PatientRecord.id.desc()).first()
     if not patient or not patient.abha_id:
         return {"relevant_history": [], "other_history": [], "filter_status": "no_abha", "abha_id": None}
     

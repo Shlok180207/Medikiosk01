@@ -119,7 +119,21 @@ export function AppProvider({ children }) {
     } catch (e) {}
   }, []);
 
-  const [patientId, setPatientId] = useState(null); // backend-assigned PT-XXXX
+  const [patientId, setPatientIdState] = useState(() => {
+    try {
+      return sessionStorage.getItem('medikiosk_patient_id') || null;
+    } catch (e) {
+      return null;
+    }
+  });
+
+  const setPatientId = useCallback((val) => {
+    setPatientIdState(val);
+    try {
+      if (val) sessionStorage.setItem('medikiosk_patient_id', val);
+      else sessionStorage.removeItem('medikiosk_patient_id');
+    } catch (e) {}
+  }, []);
 
   // Consent
   const [consentGiven, setConsentGiven] = useState(false);
