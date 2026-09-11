@@ -28,9 +28,9 @@ MediKiosk runs its offline Speech-to-Text (`faster-whisper`) and Clinical LLM (`
 
 | Stage | Name | Purpose |
 |---|---|---|
-| **Stage 0** | **Configuration** | Configures `REPO_URL` (`https://github.com/Shlok180207/Medikiosk01.git`), workspace path (`/content/Medikiosk01`), branch (`main`), and processor mode (`AUTO`, `FORCE_GPU`, `FORCE_CPU`). |
+| **Stage 0** | **Configuration** | Configures `REPO_URL` (`https://github.com/Shlok180207/Medikiosk-Personal.git`), workspace path (`/content/Medikiosk-Personal`), branch (`main`), and processor mode (`AUTO`, `FORCE_GPU`, `FORCE_CPU`). |
 | **Stage 1** | **GPU / CUDA Verification** | Inspects PyTorch version, checks CUDA availability, VRAM, and prints `nvidia-smi`. Stops early if `FORCE_GPU` is requested without a GPU. |
-| **Stage 2** | **Clone / Synchronize Repository** | Pulls or synchronizes the repository into `/content/Medikiosk01` and prints commit hash and branch. |
+| **Stage 2** | **Clone / Synchronize Repository** | Pulls or synchronizes the repository into `/content/Medikiosk-Personal` and prints commit hash and branch. |
 | **Stage 3** | **System Dependencies** | Installs Linux packages: `tesseract-ocr`, language packs (`eng`, `hin`), `zstd`, `curl`, and `ffmpeg`. |
 | **Stage 4** | **Python Dependencies** | Preserves Colab's existing CUDA PyTorch without blindly replacing it. Installs `PyMuPDF` (explicitly), `pytesseract`, `faster-whisper`, `torchxrayvision`, `rapidfuzz`, and `fastapi`. |
 | **Stage 5** | **Verify OCR & PDF** | Confirms `import fitz` (PyMuPDF) and `pytesseract` work. Confirms working OCR fallback status. |

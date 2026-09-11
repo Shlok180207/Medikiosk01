@@ -45,8 +45,8 @@ import os
 import sys
 
 # User-Configurable Parameters
-REPO_URL = "https://github.com/Shlok180207/Medikiosk01.git"
-WORKSPACE_DIR = "/content/Medikiosk01"
+REPO_URL = "https://github.com/Shlok180207/Medikiosk-Personal.git"
+WORKSPACE_DIR = "/content/Medikiosk-Personal"
 BRANCH = "main"
 PROCESSOR_MODE = "AUTO"  # "AUTO", "FORCE_GPU", or "FORCE_CPU"
 PORT = 8000
@@ -128,7 +128,7 @@ print("=" * 60)
     # Stage 2
     md_cell("""---
 ## Stage 2 — Clone / Synchronize Repository
-Clones or synchronizes the target repository (`https://github.com/Shlok180207/Medikiosk01.git`) into `/content/Medikiosk01`.
+Clones or synchronizes the target repository (`https://github.com/Shlok180207/Medikiosk-Personal.git`) into `/content/Medikiosk-Personal`.
 Prints commit hash, branch name, and status.
 """)
 
@@ -909,7 +909,7 @@ report = f\"\"\"
 🏥 MediKiosk Colab Diagnostic Report
 ============================================================
 
-Repository          : Medikiosk01
+Repository          : {os.path.basename(REPO_URL).replace('.git', '')}
 Commit              : {git_hash}
 Branch              : {git_branch}
 
