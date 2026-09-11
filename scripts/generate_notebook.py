@@ -234,7 +234,6 @@ Installs all backend, AI, vision, audio, and OCR dependencies.
     code_cell("""# ── Stage 4: Install Python Dependencies ──
 import sys
 import subprocess
-import importlib
 
 print("=" * 60)
 print("🐍 Stage 4 — Installing Python Dependencies")
@@ -316,7 +315,6 @@ for tier_idx, (tier_name, pkg_list) in enumerate(package_tiers, 1):
 
 # Re-verify PyTorch and CUDA post-installation
 import torch
-importlib.reload(torch)
 
 post_cuda = torch.cuda.is_available()
 print(f"\\nPost-install PyTorch version : {torch.__version__}")
