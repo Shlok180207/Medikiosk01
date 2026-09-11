@@ -857,16 +857,16 @@ if not os.path.exists(cf_bin):
 tunnel_log_path = "/content/tunnel.log"
 tunnel_log = open(tunnel_log_path, "w")
 
-print(f"Starting cloudflared quick tunnel for http://127.0.0.1:{PORT}...")
+print(f"Starting cloudflared quick tunnel for http://127.0.0.1:{PORT} (HTTP/2 protocol)...")
 tunnel_proc = subprocess.Popen(
-    ["cloudflared", "tunnel", "--url", f"http://127.0.0.1:{PORT}"],
+    ["cloudflared", "tunnel", "--no-autoupdate", "--protocol", "http2", "--url", f"http://127.0.0.1:{PORT}"],
     stdout=tunnel_log,
     stderr=subprocess.STDOUT
 )
 
 # Wait for tunnel URL to appear in logs
 public_url = None
-max_wait = 30
+max_wait = 35
 start_t = time.time()
 
 while time.time() - start_t < max_wait:
@@ -884,7 +884,26 @@ if not public_url:
         log_snippet = tf.read()
     raise RuntimeError(f"❌ Failed to obtain Cloudflare Tunnel URL!\\nLog:\\n{log_snippet}")
 
-print(f"✅ Cloudflare Tunnel is LIVE: {public_url}")
+print(f"Domain assigned: {public_url}")
+print("Waiting for Cloudflare edge routing to synchronize...")
+
+# Wait until edge connection is established (prevents Cloudflare Error 1033)
+edge_connected = False
+for _ in range(12):
+    time.sleep(1.5)
+    with open(tunnel_log_path, "r") as tf:
+        log_content = tf.read()
+    if "Registered tunnel connection" in log_content or "registered connIndex=" in log_content:
+        edge_connected = True
+        break
+
+if edge_connected:
+    print("✅ Cloudflare edge connections established and synchronized.")
+else:
+    print("⚠️ Edge sync in progress, waiting additional 4 seconds...")
+    time.sleep(4.0)
+
+print(f"\\n✅ Cloudflare Tunnel is READY and LIVE: {public_url}")
 print("=" * 60)
 """)
 
