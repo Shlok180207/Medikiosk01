@@ -30,9 +30,9 @@ load_dotenv()
 # ── Offline AI Models ──
 import ollama
 
-OLLAMA_MODEL = "qwen2.5:7b"
-FALLBACK_MODEL = "qwen2.5:3b"
-DOC_EXTRACTION_MODEL = "qwen2.5:7b"
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
+FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "qwen2.5:3b")
+DOC_EXTRACTION_MODEL = os.getenv("DOC_EXTRACTION_MODEL", OLLAMA_MODEL)
 
 # ── Perception & Synthesis Engines (100% CPU Perception + GPU LLM) ──
 from perception.xray import analyze_xray
@@ -77,18 +77,31 @@ _whisper_lock = threading.Lock()
 whisper_pipeline = None
 
 def get_whisper_pipeline():
-    """Lazily load Faster-Whisper on CUDA GPU (int8_float16) for blazing-fast 0.5s speech transcription."""
+    """Lazily load Faster-Whisper on configured device (default CUDA GPU int8_float16)."""
     global whisper_pipeline
     with _whisper_lock:
         if whisper_pipeline is None:
-            print("⚡ Loading Faster-Whisper on CUDA GPU (int8_float16)...")
+            w_model = os.getenv("WHISPER_MODEL", "medium")
+            w_dev = os.getenv("WHISPER_DEVICE", "cuda")
+            w_compute = os.getenv("WHISPER_COMPUTE_TYPE", "int8_float16" if w_dev == "cuda" else "int8")
+            print(f"⚡ Loading Faster-Whisper ({w_model}) on {w_dev} ({w_compute})...")
             try:
                 from faster_whisper import WhisperModel
-                whisper_pipeline = WhisperModel("large-v3", device="cuda", compute_type="int8_float16")
-                print("✅ Faster-Whisper loaded on CUDA GPU (transcription latency: ~0.5s).")
+                whisper_pipeline = WhisperModel(w_model, device=w_dev, compute_type=w_compute)
+                print(f"✅ Faster-Whisper loaded on {w_dev} ({w_compute}).")
             except Exception as e:
-                print(f"❌ Faster-Whisper failed to load: {e}")
-                whisper_pipeline = None
+                print(f"❌ Faster-Whisper failed to load on {w_dev}: {e}")
+                if w_dev == "cuda":
+                    try:
+                        print("⚠️ Attempting CPU fallback for Faster-Whisper...")
+                        from faster_whisper import WhisperModel
+                        whisper_pipeline = WhisperModel("base", device="cpu", compute_type="int8")
+                        print("✅ Faster-Whisper fallback loaded on CPU.")
+                    except Exception as fe:
+                        print(f"❌ Faster-Whisper CPU fallback failed: {fe}")
+                        whisper_pipeline = None
+                else:
+                    whisper_pipeline = None
         return whisper_pipeline
 
 def unload_whisper():
@@ -1437,8 +1450,15 @@ Output ONLY valid JSON:
 
 # ═══════════════ ENDPOINTS ═══════════════
 
+@app.get("/api/health")
+async def health():
+    return {"status": "ok", "service": "medikiosk-backend", "offline_mode": True}
+
 @app.get("/")
 async def root():
+    frontend_index = os.path.join(os.path.dirname(__file__), "frontend", "dist", "index.html")
+    if os.path.exists(frontend_index):
+        return FileResponse(frontend_index)
     return {"message": "MediKiosk v2 Backend running (Offline Mode)"}
 
 
@@ -2437,9 +2457,9 @@ async def process_document(
     with open(file_path, "wb") as f:
         f.write(file_bytes)
     
-    # We will pass the full url, assuming frontend is on same host or API is absolute
-    base_url = "http://localhost:8000" 
-    file_url = f"{base_url}/uploads/{saved_filename}"
+    # We will pass the url for viewing, using relative path or configured base URL
+    base_url = os.getenv("APP_BASE_URL", "").rstrip("/")
+    file_url = f"{base_url}/uploads/{saved_filename}" if base_url else f"/uploads/{saved_filename}"
 
     # Dispatch to background task
     background_tasks.add_task(
@@ -2945,6 +2965,26 @@ async def demo_data(background_tasks: BackgroundTasks, abha_id: Optional[str] = 
     background_tasks.add_task(filter_history_background, patient.id, profile["abha_id"], patient.chief_complaint)
 
     return {"status": "success", "patient_id": pt_id, "patient_name": profile["name"], "abha_id": profile["abha_id"]}
+
+
+# ── Mount Frontend Single Page Application (SPA) if Built ──
+FRONTEND_DIST = os.path.join(os.path.dirname(__file__), "frontend", "dist")
+if os.path.exists(FRONTEND_DIST):
+    assets_dir = os.path.join(FRONTEND_DIST, "assets")
+    if os.path.exists(assets_dir):
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="frontend_assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_spa_frontend(full_path: str):
+        if full_path.startswith("api/") or full_path.startswith("uploads/") or full_path.startswith("docs") or full_path == "openapi.json":
+            raise HTTPException(status_code=404, detail="Endpoint not found")
+        file_path = os.path.join(FRONTEND_DIST, full_path)
+        if os.path.isfile(file_path):
+            return FileResponse(file_path)
+        index_file = os.path.join(FRONTEND_DIST, "index.html")
+        if os.path.isfile(index_file):
+            return FileResponse(index_file)
+        raise HTTPException(status_code=404, detail="Endpoint not found")
 
 
 if __name__ == "__main__":

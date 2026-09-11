@@ -26,10 +26,11 @@ pillow>=10.2.0
 # ── Handwriting OCR & Drug Normalization (CPU-Bound) ──
 rapidfuzz>=3.6.0
 transformers>=4.38.0
+pytesseract>=0.3.10
+PyMuPDF>=1.24.0
 # Optional / complementary OCR engines:
 # paddleocr>=2.7.3
 # paddlepaddle>=2.6.0
-# pytesseract>=0.3.10
 
 # ── Local GPU LLM Inference ──
 # Option A: Local Ollama (pip install ollama)
