@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import uvicorn
 from typing import List, Optional
-import os, uuid, json, re, io, tempfile, base64, hashlib, threading
+import os, uuid, json, re, io, tempfile, base64, hashlib, threading, asyncio
 from gtts import gTTS
 from datetime import datetime
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text, text, event
@@ -1784,13 +1784,14 @@ def detect_visual_modality(image_bytes: bytes, filename: str = "") -> tuple[str,
 
     # 1. Immediate high-confidence filename heuristics
     fn = (filename or "").lower()
-    if any(k in fn for k in ["xray", "x-ray", "cxr", "chest", "radiology", "radiograph", "ct_scan", "ct-scan", "mri", "ultrasound"]):
+    # Film radiographs (chest/bone x-rays)
+    if any(k in fn for k in ["xray", "x-ray", "cxr", "radiograph", "chest_xray", "bone_xray"]):
         return "radiology", radiology_prompt
     if any(k in fn for k in ["ecg", "ekg", "cardio", "rhythm", "holter"]):
         return "ecg", ecg_prompt
     if any(k in fn for k in ["biopsy", "patholog", "histolog", "cytolog", "specimen"]):
         return "pathology", pathology_prompt
-    if any(k in fn for k in ["prescription", "doctor_slip", "rx_slip", "consultation_slip"]):
+    if any(k in fn for k in ["prescription", "doctor_slip", "rx_slip", "consultation_slip", "ultrasound", "usg", "sonography", "mri", "ct_scan", "ct-scan", "report"]):
         return "document", doc_prompt
 
     try:
@@ -1808,8 +1809,10 @@ def detect_visual_modality(image_bytes: bytes, filename: str = "") -> tuple[str,
 
         mean_s = float(np.mean(s))
         mean_v = float(np.mean(v))
-        dark_pixel_ratio = float(np.mean(v < 75))
-        bright_pixel_ratio = float(np.mean(v > 180))
+        dark_pixel_ratio = float(np.mean(v < 45))
+        # Indoor lighting captures white paper at brightness between 115 and 190, low saturation < 45
+        paper_pixel_ratio = float(np.mean((v >= 115) & (s < 45)))
+        corner_mean = float(np.mean([v[:20, :20], v[:20, -20:], v[-20:, :20], v[-20:, -20:]]))
 
         # Inspect central 60% of image where clinical document / strip body resides
         h_c = h[30:120, 30:120]
@@ -1817,38 +1820,30 @@ def detect_visual_modality(image_bytes: bytes, filename: str = "") -> tuple[str,
         v_c = v[30:120, 30:120]
 
         # 1. True Paper Document Feature:
-        # Real printed prescriptions / lab slips feature high-brightness pure white paper backgrounds (v > 215, s < 35).
-        # This covers > 40% of the document canvas (unlike radiographs where bones/cardiac shadow are mid-tone gray).
-        pure_white_center = float(np.mean((s_c < 35) & (v_c > 215)))
-        pure_white_overall = float(np.mean((s < 35) & (v > 215)))
+        # Paper slips and printed reports have bright backgrounds (>115), bright corners (>80), and negligible dark air (<12%)
+        is_paper_document = (paper_pixel_ratio > 0.45 and dark_pixel_ratio < 0.12 and corner_mean > 80) or (paper_pixel_ratio > 0.65)
 
-        # 2. Radiographic Continuous Mid-Tone Gradients:
-        # Radiographs (X-rays, CTs) represent tissue attenuation maps with continuous grayscale midtones (40 <= v <= 205).
-        mid_tone_center = float(np.mean((v_c >= 40) & (v_c <= 205)))
-        mid_tone_overall = float(np.mean((v >= 40) & (v <= 205)))
-
-        # 3. ECG Pink/Salmon grid: Real ECG paper has calibrated millimetric pink grid lines
+        # 2. ECG Pink/Salmon grid: Real ECG paper has calibrated millimetric pink grid lines
         # across the paper body itself. Hue in [230..255] or [0..15], S in [25..200], V >= 110
         ecg_center_mask = ((h_c >= 230) | (h_c <= 15)) & (s_c >= 25) & (s_c <= 200) & (v_c >= 110)
         ecg_center_ratio = float(np.mean(ecg_center_mask))
 
-        # 4. Histopathology H&E violet/purple/magenta stain: Hue in [175..235], Saturation > 35, Brightness > 60
+        # 3. Histopathology H&E violet/purple/magenta stain: Hue in [175..235], Saturation > 35, Brightness > 60
         pathology_mask = (h_c >= 175) & (h_c <= 235) & (s_c >= 35) & (v_c >= 60)
         pathology_ratio = float(np.mean(pathology_mask))
 
-        # 5. Endoscopy / Mucosal / Dermoscopy warm tones: Hue in [0..30] or [240..255], Saturation > 45
+        # 4. Endoscopy / Mucosal / Dermoscopy warm tones: Hue in [0..30] or [240..255], Saturation > 45
         endoscopy_mask = ((h_c <= 30) | (h_c >= 240)) & (s_c >= 45)
         endoscopy_ratio = float(np.mean(endoscopy_mask))
 
-        # 6. Radiograph Blue/Cyan tint (common Kodak/digital monitor tint): Hue in [130..180], Saturation > 20
+        # 5. Radiograph Blue/Cyan tint (common Kodak/digital monitor tint): Hue in [130..180], Saturation > 20
         blue_cyan_mask = (h >= 130) & (h <= 180) & (s >= 20)
         blue_cyan_ratio = float(np.mean(blue_cyan_mask))
 
-        is_monochrome = (mean_s < 25) or (blue_cyan_ratio > 0.30)
-        img_aspect = float(img.width) / max(float(img.height), 1.0)
+        is_monochrome = (mean_s < 28) or (blue_cyan_ratio > 0.30)
 
         # Modality Decision Engine:
-        if ecg_center_ratio > 0.10 and pure_white_center < 0.40:
+        if ecg_center_ratio > 0.08 and paper_pixel_ratio < 0.40:
             modality = "ecg"
             prompt = ecg_prompt
         elif pathology_ratio > 0.20:
@@ -1857,13 +1852,12 @@ def detect_visual_modality(image_bytes: bytes, filename: str = "") -> tuple[str,
         elif endoscopy_ratio > 0.30 and mean_s > 40:
             modality = "endoscopy"
             prompt = endoscopy_prompt
-        # Radiology (Chest X-Ray, Bone Radiograph, CT):
-        # Grayscale or PACS-blue tint with continuous tissue midtone gradients, NOT pure white printed paper
-        elif is_monochrome and mid_tone_center > 0.35 and pure_white_center < 0.35:
-            modality = "radiology"
-            prompt = radiology_prompt
-        # Dark-background radiograph (traditional film X-ray with black air field)
-        elif is_monochrome and (mean_v < 135 or dark_pixel_ratio > 0.20) and pure_white_center < 0.25:
+        elif is_paper_document:
+            # Strictly locked as document: Never route white paper to radiograph DenseNet
+            modality = "document"
+            prompt = doc_prompt
+        elif is_monochrome and (dark_pixel_ratio > 0.18 or (corner_mean < 75 and mean_v < 120)) and (paper_pixel_ratio < 0.35):
+            # True negative-polarity radiograph film (Chest X-Ray, Bone X-Ray)
             modality = "radiology"
             prompt = radiology_prompt
         else:
@@ -2336,6 +2330,7 @@ def process_document_background(file_bytes: bytes, filename: str, content_type: 
                     from perception.router import classify_image_modality
                     from perception.prescription import preprocess_prescription, run_ocr
                     from perception.lab import analyze_lab_report
+                    from perception.diagnostic_report import is_diagnostic_imaging_report, analyze_diagnostic_report
 
                     router_info = classify_image_modality(file_bytes)
                     is_printed = router_info.get("modality") == "PRINTED_REPORT"
@@ -2346,7 +2341,7 @@ def process_document_background(file_bytes: bytes, filename: str, content_type: 
                         "urine", "lipid", "patholog", "biochem", "test_report", "sample"
                     ])
 
-                    # Fast check on document text for laboratory keywords
+                    # Fast check on document text for laboratory vs diagnostic imaging keywords
                     contrast_gray, binarized = preprocess_prescription(file_bytes)
                     quick_ocr = run_ocr(contrast_gray, binarized).lower()
 
@@ -2359,8 +2354,13 @@ def process_document_background(file_bytes: bytes, filename: str, content_type: 
                         "hba1c", "biological ref", "reference interval", "observed value", "test name", "labsmart"
                     ]
                     lab_kw_count = sum(1 for k in LAB_KEYWORDS if k in quick_ocr)
+                    is_diagnostic = is_diagnostic_imaging_report(quick_ocr, filename=filename)
 
-                    if is_lab_fn or (is_printed and lab_kw_count >= 1) or lab_kw_count >= 2:
+                    if is_diagnostic:
+                        print("📑 Executing Diagnostic Imaging Report Perception Engine (Ultrasound / CT / MRI report)...")
+                        diag_res = analyze_diagnostic_report(file_bytes, file_url=file_url, filename=filename)
+                        structured_data = diag_res.get("dashboard_payload", {})
+                    elif is_lab_fn or (is_printed and lab_kw_count >= 1) or lab_kw_count >= 2:
                         print(f"🔬 Executing Tabular Laboratory Perception Engine ({lab_kw_count} lab keywords detected)...")
                         lab_res = analyze_lab_report(file_bytes, file_url=file_url, filename=filename)
                         structured_data = lab_res.get("dashboard_payload", {})
@@ -2401,11 +2401,10 @@ def process_document_background(file_bytes: bytes, filename: str, content_type: 
                         except Exception:
                             pass
                     
-                    # Deduplicate based on file_url or matching document_type + summary
+                    # Deduplicate strictly based on file_url to prevent dropping distinct documents with similar summaries
                     target_url = structured_data.get("file_url")
                     is_dup = any(
-                        (target_url and d.get("file_url") == target_url) or
-                        (d.get("summary") == structured_data.get("summary") and d.get("document_type") == structured_data.get("document_type"))
+                        target_url and d.get("file_url") == target_url
                         for d in existing
                     )
                     if not is_dup:
@@ -2413,16 +2412,123 @@ def process_document_background(file_bytes: bytes, filename: str, content_type: 
                         p_fresh.flagged_lab_values = json.dumps(existing)
                         db_save.commit()
                         print(f"📄 Successfully saved document [{structured_data.get('document_type')}]. Patient {p_fresh.patient_id} now has {len(existing)} documents.")
+                    else:
+                        print(f"⚠️ Document already recorded for file_url: {target_url}")
             finally:
                 db_save.close()
     except Exception as outer_e:
         print(f"Error in process_document_background: {outer_e}")
 
 
+# ── Asynchronous Serialized Document Queue Worker ──
+# Ensures sequential FIFO processing to prevent multi-document Ollama timeouts and GPU/CPU thrashing.
+doc_processing_queue: asyncio.Queue = asyncio.Queue()
+_doc_worker_task: Optional[asyncio.Task] = None
+
+async def document_queue_worker():
+    """Background worker that processes uploaded documents sequentially from the queue."""
+    print("🚀 Document Queue Worker active (FIFO Serialized Processing)")
+    while True:
+        try:
+            item = await doc_processing_queue.get()
+            file_bytes, filename, content_type, file_url, patient_id_db = item
+            print(f"📥 [Doc Queue Worker] Processing item: '{filename}' for DB Patient #{patient_id_db} (Remaining in queue: {doc_processing_queue.qsize()})")
+            await asyncio.to_thread(
+                process_document_background,
+                file_bytes, filename, content_type, file_url, patient_id_db
+            )
+        except Exception as e:
+            print(f"❌ Error in document queue worker: {e}")
+        finally:
+            doc_processing_queue.task_done()
+
+
+def auto_crop_document_image(image_bytes: bytes) -> bytes:
+    """
+    Intelligently detects paper prescription/lab report and crops away background room,
+    doors, curtains, ceilings, and hands using spatial text-density cluster analysis.
+    If a document occupies a sub-region (12% to 90% of frame), returns JPEG bytes of cropped document.
+    Otherwise returns original image_bytes.
+    """
+    try:
+        import cv2
+        import numpy as np
+
+        nparr = np.frombuffer(image_bytes, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if img is None:
+            return image_bytes
+
+        h, w = img.shape[:2]
+
+        # Downscale for rapid spatial gradient analysis
+        dw, dh = 480, 270
+        small = cv2.resize(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), (dw, dh))
+
+        # Sobel gradients to isolate text and handwriting strokes
+        gx = cv2.Sobel(small, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(small, cv2.CV_32F, 0, 1, ksize=3)
+        grad = np.sqrt(gx**2 + gy**2)
+
+        # Suppress image borders to eliminate ceiling lights or wall frames
+        mask = np.ones((dh, dw), dtype=bool)
+        mask[:int(dh * 0.12), :] = False
+        mask[-int(dh * 0.02):, :] = False
+        mask[:, :int(dw * 0.02)] = False
+        mask[:, -int(dw * 0.02):] = False
+
+        # Bright paper pixels (> 150) that contain clinical text/line ink (grad > 18)
+        is_paper_text = ((small > 150) & (grad > 18) & mask).astype(np.uint8) * 255
+
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(is_paper_text)
+        
+        boxes = []
+        for idx in range(1, num_labels):
+            area = stats[idx, cv2.CC_STAT_AREA]
+            cw = stats[idx, cv2.CC_STAT_WIDTH]
+            ch = stats[idx, cv2.CC_STAT_HEIGHT]
+            x = stats[idx, cv2.CC_STAT_LEFT]
+            y = stats[idx, cv2.CC_STAT_TOP]
+
+            # Text line or word stroke
+            if 15 <= area <= 3000 and cw < int(dw * 0.55) and ch < int(dh * 0.55):
+                boxes.append((x, y, cw, ch))
+
+        if len(boxes) >= 5:
+            min_x = min([b[0] for b in boxes])
+            max_x = max([b[0] + b[2] for b in boxes])
+            min_y = min([b[1] for b in boxes])
+            max_y = max([b[1] + b[3] for b in boxes])
+
+            bw = max_x - min_x
+            bh = max_y - min_y
+            scale_x = w / dw
+            scale_y = h / dh
+
+            # Add 12% safety padding around document text to preserve headers, footers, and margins
+            crop_x = max(0, int((min_x - bw * 0.12) * scale_x))
+            crop_y = max(0, int((min_y - bh * 0.12) * scale_y))
+            crop_w = min(w - crop_x, int(bw * 1.24 * scale_x))
+            crop_h = min(h - crop_y, int(bh * 1.24 * scale_y))
+
+            crop_area = crop_w * crop_h
+            # Only crop if it isolates a substantial sub-region (between 12% and 88% of full frame)
+            if (w * h * 0.12) <= crop_area <= (w * h * 0.88):
+                cropped = img[crop_y:crop_y + crop_h, crop_x:crop_x + crop_w]
+                success, encoded_img = cv2.imencode('.jpg', cropped, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+                if success:
+                    print(f"✂️ [Auto-Crop] Successfully cropped document from {w}x{h} to {crop_w}x{crop_h} at ({crop_x}, {crop_y})")
+                    return encoded_img.tobytes()
+
+        return image_bytes
+    except Exception as e:
+        print(f"⚠️ [Auto-Crop] Note: {e}")
+        return image_bytes
+
+
 # ── Document Processing ──
 @app.post("/api/process-document")
 async def process_document(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     patient_id: Optional[str] = Form(None),
     db: Session = Depends(get_db)
@@ -2447,7 +2553,15 @@ async def process_document(
         db.refresh(patient)
 
     file_bytes = await file.read()
-    print(f"Document received: {file.filename}, {len(file_bytes)} bytes. Dispatching background task.")
+    print(f"Document received: {file.filename}, {len(file_bytes)} bytes. Auto-detecting document crop boundaries.")
+
+    # Automatically crop document if it contains background room/hands (skip if already client-deskewed)
+    if file.content_type and "image" in file.content_type:
+        is_deskewed = file.filename and "deskewed" in file.filename.lower()
+        if not is_deskewed:
+            file_bytes = auto_crop_document_image(file_bytes)
+        else:
+            print(f"📄 Document {file.filename} is already deskewed by client scanner. Preserving full margins.")
 
     # Save file for viewing later
     os.makedirs("uploads", exist_ok=True)
@@ -2461,26 +2575,33 @@ async def process_document(
     base_url = os.getenv("APP_BASE_URL", "").rstrip("/")
     file_url = f"{base_url}/uploads/{saved_filename}" if base_url else f"/uploads/{saved_filename}"
 
-    # Dispatch to background task
-    background_tasks.add_task(
-        process_document_background,
+    # Ensure queue worker is running
+    global _doc_worker_task
+    if _doc_worker_task is None or _doc_worker_task.done():
+        _doc_worker_task = asyncio.create_task(document_queue_worker())
+
+    # Dispatch to sequential document processing queue
+    await doc_processing_queue.put((
         file_bytes,
         file.filename,
         file.content_type,
         file_url,
         patient.id
-    )
+    ))
+    q_depth = doc_processing_queue.qsize()
+    print(f"📥 Enqueued '{file.filename}' into Document Processing Queue. Current depth: {q_depth}")
 
     return {
         "status": "success", 
-        "message": "Document is being processed asynchronously.",
+        "message": f"Document enqueued for sequential processing. Queue depth: {q_depth}.",
+        "queue_depth": q_depth,
         "extracted_document": {
             "document_type": "Processing...",
-            "diagnoses": ["Analyzing document in background..."],
+            "diagnoses": ["Document queued for sequential clinical processing..."],
             "medications": [],
             "flagged_values": [],
             "document_date": "Pending",
-            "summary": "Document securely uploaded and queued for processing.",
+            "summary": f"Document '{file.filename}' securely uploaded and enqueued.",
             "file_url": file_url,
             "raw_text": ""
         }

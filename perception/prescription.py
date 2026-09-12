@@ -695,12 +695,12 @@ def consolidate_fdc_medications(med_list: List[Dict[str, Any]]) -> List[Dict[str
         base_key = re.sub(r'\s*\d+\s*(?:mg|mcg|ml|gm).*', '', clean_name).strip()
         if base_key in seen:
             prev = seen[base_key]
-            m_gen = m.get('generic', '').strip()
-            prev_gen = prev.get('generic', '').strip()
+            m_gen = str(m.get('generic') or '').strip()
+            prev_gen = str(prev.get('generic') or '').strip()
             if m_gen and m_gen.lower() not in prev_gen.lower():
                 prev['generic'] = f"{prev_gen} + {m_gen}" if prev_gen else m_gen
-            m_str = m.get('strength', '').strip()
-            prev_str = prev.get('strength', '').strip()
+            m_str = str(m.get('strength') or '').strip()
+            prev_str = str(prev.get('strength') or '').strip()
             if m_str and m_str.lower() not in prev_str.lower():
                 prev['strength'] = f"{prev_str} + {m_str}" if prev_str else m_str
             if m.get('status') == 'VERIFIED':
@@ -731,7 +731,7 @@ def normalize_drugs(raw_text: str, structured_llm: Optional[Dict[str, Any]] = No
     # 1. Primary: Candidates from Multimodal Vision-LLM
     if structured_llm and structured_llm.get("medications"):
         for m in structured_llm["medications"]:
-            name = str(m.get("name", "")).strip()
+            name = str(m.get("name") or "").strip()
             if not name or len(name) < 3:
                 continue
             candidate_items.append(m)
@@ -742,7 +742,7 @@ def normalize_drugs(raw_text: str, structured_llm: Optional[Dict[str, Any]] = No
     # 2. Secondary: Extract and Fuse Candidates from Deterministic OCR parsing
     ocr_items = parse_rx_deterministic(raw_text)
     for item in ocr_items:
-        name = item.get("name", "").strip()
+        name = str(item.get("name") or "").strip()
         name_clean = re.sub(r'^(?:TAB\.?|CAP\.?|SYRUP|INJ\.?)\s*', '', name, flags=re.IGNORECASE).strip().lower()
         words = [w for w in re.findall(r'[a-zA-Z]{3,}', name_clean)]
         if not words or sum(c.isalpha() for c in name_clean) < 3:
@@ -761,12 +761,12 @@ def normalize_drugs(raw_text: str, structured_llm: Optional[Dict[str, Any]] = No
 
     # 3. Process all unified candidates through 2-Tier Indian Drug Verification (SQLite FTS5 + RapidFuzz)
     for item in candidate_items:
-        name = item.get("name", "").strip()
-        gen = item.get("generic", "").strip()
-        strength = item.get("strength", "").strip()
-        dosage = item.get("dosage", "").strip()
-        dur = item.get("duration", "").strip()
-        instr = item.get("instructions", "").strip()
+        name = str(item.get("name") or "").strip()
+        gen = str(item.get("generic") or "").strip()
+        strength = str(item.get("strength") or "").strip()
+        dosage = str(item.get("dosage") or "").strip()
+        dur = str(item.get("duration") or "").strip()
+        instr = str(item.get("instructions") or "").strip()
 
         if not name or len(name) < 3:
             continue
@@ -964,6 +964,15 @@ def analyze_prescription(image_input, file_url: str = "") -> Dict[str, Any]:
             return analyze_lab_report(image_input, file_url=file_url)
         except Exception as le:
             print(f"Lab routing fallback note: {le}")
+
+    # Defense-in-depth: Reclassify as Diagnostic Report if imaging keywords are present
+    try:
+        from perception.diagnostic_report import is_diagnostic_imaging_report, analyze_diagnostic_report
+        if is_diagnostic_imaging_report(combined_doc_text) and len(drugs) <= 2:
+            print("📑 Reclassifying document from Prescription to Diagnostic Imaging Report...")
+            return analyze_diagnostic_report(image_input, file_url=file_url)
+    except Exception as de:
+        print(f"Diagnostic report routing fallback note: {de}")
 
     # 4. Extract doctor, clinic, complaints, and dates
     doc_name = ""
