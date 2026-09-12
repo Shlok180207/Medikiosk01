@@ -55,11 +55,12 @@ def classify_image_modality(image_input: Union[str, bytes, np.ndarray]) -> Dict[
     aspect_ratio = round(float(w) / max(float(h), 1.0), 2)
     mean_sat = float(np.mean(hsv[:, :, 1]))
 
-    # ── Feature 1: True White Paper Document Detection ──
-    # Printed clinical documents (prescriptions, consultation slips, printed lab sheets)
-    # feature predominantly pure white paper backgrounds (gray > 215, low saturation < 35)
-    white_paper_mask = (gray > 215) & (hsv[:, :, 1] < 35)
+    # ── Feature 1: True Paper Document vs Dark Background Film ──
+    # Printed clinical documents (prescriptions, consultation slips, printed reports)
+    # feature light/white paper backgrounds (gray >= 115 under typical indoor lighting, low saturation < 45)
+    white_paper_mask = (gray >= 115) & (hsv[:, :, 1] < 45)
     white_paper_ratio = float(np.sum(white_paper_mask)) / float(gray.size)
+    dark_air_fraction = float(np.sum(gray < 45)) / float(gray.size)
 
     # ── Feature 2: ECG Pink/Salmon Grid Line Density ──
     # Restrict hue to pure red/salmon and pink (exclude brown/wood desks: OpenCV Hue 8..15 with medium saturation)
@@ -95,9 +96,10 @@ def classify_image_modality(image_input: Union[str, bytes, np.ndarray]) -> Dict[
             "description": "12-Lead ECG strip with characteristic calibrated grid and lead tracing."
         }
 
-    # ── Feature 2: Radiograph (Dark Background or Grayscale Midtones) vs. Paper Document ──
-    # Radiographs have dark corners (air/borders) or rich anatomical tissue midtones (40 <= gray <= 205)
-    # Paper slips and printed reports have pure white paper backgrounds (white_paper_ratio > 0.40)
+    # ── Feature 2: Radiograph (Dark Background Film) vs. Paper Document ──
+    # Radiographs have dark background air borders/corners (corner_mean < 75),
+    # substantial unattenuated beam air field (dark_air_fraction > 0.20),
+    # and minimal white paper (white_paper_ratio < 0.30).
     corner_size = max(5, int(min(h, w) * 0.06))
     corners = [
         gray[:corner_size, :corner_size],
@@ -107,9 +109,16 @@ def classify_image_modality(image_input: Union[str, bytes, np.ndarray]) -> Dict[
     ]
     corner_mean = float(np.mean([np.mean(c) for c in corners]))
     overall_mean = float(np.mean(gray))
-    mid_tones = float(np.mean((gray >= 40) & (gray <= 205)))
-    is_radiograph_midtones = (mid_tones > 0.35 and white_paper_ratio < 0.35 and mean_sat < 25)
-    is_dark_radiograph = (corner_mean < 80 and overall_mean < 145) or (overall_mean < 115) or is_radiograph_midtones
+
+    # Paper documents: light background, bright corners, negligible dark air
+    is_paper_document = (white_paper_ratio > 0.45 and dark_air_fraction < 0.12 and corner_mean > 80) or (white_paper_ratio > 0.65)
+
+    # Real radiographs are negative-film imaging: Air and boundaries are DARK / BLACK.
+    # They MUST NOT be a positive-polarity white-paper document.
+    is_dark_radiograph = (not is_paper_document) and (mean_sat < 30) and (
+        (corner_mean < 75 and overall_mean < 120) or
+        (dark_air_fraction > 0.20 and white_paper_ratio < 0.25)
+    )
 
     if is_dark_radiograph:
         # ── Feature 3: Chest X-Ray vs. Bone/Extremity X-Ray vs. Panoramic Dental ──

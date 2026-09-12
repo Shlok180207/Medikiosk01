@@ -87,6 +87,14 @@ def analyze_chest_xray(
     img = decode_image_to_grayscale(image_path)
     h, w = img.shape
 
+    # ── Safeguard: Prevent executing DenseNet on white-paper text documents ──
+    paper_ratio = float(np.mean(img >= 115))
+    dark_air_ratio = float(np.mean(img < 45))
+    if paper_ratio > 0.55 and dark_air_ratio < 0.12:
+        print("⚠️ [Radiology Safeguard] Image has paper document characteristics (>55% paper, <12% dark air). Re-routing to diagnostic report parser.")
+        from perception.diagnostic_report import analyze_diagnostic_report
+        return analyze_diagnostic_report(image_path, file_url=file_url)
+
     # ── 1. Anatomical Hemithorax Opacity Metrics ──
     # Viewer Left (X: 0.10*W to 0.44*W) = Patient's Anatomical Right Hemithorax
     # Viewer Right (X: 0.56*W to 0.90*W) = Patient's Anatomical Left Hemithorax
@@ -310,11 +318,16 @@ def analyze_xray(
     """
     from perception.router import classify_image_modality
     mod_info = classify_image_modality(image_path)
-    modality = mod_info.get("modality", "CHEST_XRAY")
+    modality = mod_info.get("modality", "")
 
     if modality == "CHEST_XRAY":
         return analyze_chest_xray(image_path, threshold=threshold, file_url=file_url)
     elif mod_info.get("sub_type") == "DENTAL_OPG":
         return analyze_dental_opg(image_path, file_url=file_url)
-    else:
+    elif modality == "BONE_XRAY":
         return analyze_bone_xray(image_path, file_url=file_url)
+    else:
+        # Intercept document or diagnostic printed report passed to analyze_xray
+        print(f"📄 [Radiology Router] Image is '{modality}'. Re-routing to Diagnostic Report Parser...")
+        from perception.diagnostic_report import analyze_diagnostic_report
+        return analyze_diagnostic_report(image_path, file_url=file_url, filename=filename)
